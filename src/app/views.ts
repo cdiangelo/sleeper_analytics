@@ -22,7 +22,20 @@ import {
 import { faabHistory, keeperOptions, freeAgents } from "../lib/normalize.js";
 import { leaguePoints, scoringEdge } from "../lib/scoring.js";
 import type { Matchup } from "../lib/types.js";
-import { barCell, lineChart, sparkline } from "./charts.js";
+import {
+  barCell,
+  emphasisLineChart,
+  lineChart,
+  seasonSpark,
+  sparkline,
+  type EmphasisSeries,
+} from "./charts.js";
+import {
+  playerSeries,
+  populatedWeeks,
+  seriesMax,
+  type PlayerSeries,
+} from "../lib/series.js";
 import {
   esc,
   injuryTag,
@@ -76,6 +89,32 @@ function projected(s: AppState, playerId: string): number | null {
 
 function currentWeek(s: AppState): number {
   return Math.max(1, s.state.week);
+}
+
+/** League-scored projection for a specific week, or null if none is loaded. */
+function projectedForWeek(s: AppState, week: number, playerId: string): number | null {
+  const stats = s.projectionsByWeek[week]?.[playerId]?.stats;
+  if (!stats) return null;
+  const meaningful = Object.keys(stats).some(
+    (k) => k !== "adp_dd_ppr" && k !== "pos_adp_dd_ppr",
+  );
+  if (!meaningful) return null;
+  return leaguePoints(stats, s.league.scoring_settings);
+}
+
+/**
+ * One line per player on the roster, actual and projected. Shared by the row
+ * sparklines and the season chart so the two can never disagree.
+ */
+export function rosterSeries(s: AppState): PlayerSeries[] {
+  const mine = s.rosters.find((r) => r.roster_id === myRosterId());
+  const starters = new Set(mine?.starters ?? []);
+
+  return (mine?.players ?? []).map((id) =>
+    playerSeries(id, s.matchups, (week, playerId) => projectedForWeek(s, week, playerId), {
+      starting: starters.has(id),
+    }),
+  );
 }
 
 function myRow(s: AppState, week: number): Matchup | undefined {
@@ -308,27 +347,36 @@ function renderTeam(s: AppState): string {
 
   const anyProjection = rows.some((r) => r.proj != null);
 
-  const rosterTable = `<table><thead><tr><th>Player</th><th>Proj</th><th>vs ½PPR</th></tr></thead><tbody>${rows
+  const all = rosterSeries(s);
+  const chartMax = seriesMax(all);
+  const chartWeeks = populatedWeeks(all);
+  const seriesById = new Map(all.map((x) => [x.playerId, x]));
+
+  const rosterTable = `<table><thead><tr><th>Player</th><th>Proj</th><th>Season</th></tr></thead><tbody>${rows
     .map((r) => {
-      const stats = s.projections[r.id]?.stats;
-      const edge =
-        stats && r.proj != null
-          ? scoringEdge(stats, s.league.scoring_settings, r.player?.pos)
-          : null;
+      const line = seriesById.get(r.id);
       return `<tr${r.starting ? ' class="is-me"' : ""}>
         <td>${posTag(r.player?.pos ?? null)} ${esc(r.player?.name ?? r.id)}${injuryTag(
           r.player?.injury ?? null,
         )}<span class="sub">${esc(r.player?.team ?? "FA")}${r.starting ? " · starting" : " · bench"}</span></td>
         <td>${r.proj == null ? '<span class="faint">—</span>' : esc(num(r.proj))}</td>
-        <td class="${edge == null ? "faint" : toneClass(edge)}">${
-          edge == null ? "—" : esc(signed(edge))
-        }</td>
+        <td class="spark-cell"><button type="button" class="spark-btn" data-open-chart="${esc(
+          r.id,
+        )}" aria-label="Season chart for ${esc(r.player?.name ?? r.id)}">${
+          line
+            ? seasonSpark(line.points, {
+                max: chartMax,
+                weeks: chartWeeks,
+                muted: !r.starting,
+              })
+            : '<span class="faint">—</span>'
+        }</button></td>
       </tr>`;
     })
     .join("")}</tbody></table>`;
 
   const projectionNote = anyProjection
-    ? "Projections recomputed under this league's scoring. The third column is what our 40+ yard and yardage bonuses add over generic half PPR."
+    ? "Projections recomputed under this league's scoring. Solid is scored, dashed is projected — tap a line for the season chart."
     : "Projections haven't published stat lines for this week yet.";
 
   // Optimal-lineup preview against projections, before the week is played.
@@ -385,11 +433,127 @@ function renderTeam(s: AppState): string {
       )
     : "";
 
+  const chartButton =
+    `<button type="button" class="linkish" data-open-chart="all">` +
+    `Season chart — all ${rows.length} players</button>`;
+
   return (
     lineupAdvice +
-    card("Your roster", projectionNote, rosterTable) +
+    card("Your roster", projectionNote, chartButton + rosterTable) +
     keeperCard
   );
+}
+
+/** Series for the season chart, in the shape the chart function wants. */
+export function chartSeries(s: AppState): EmphasisSeries[] {
+  return rosterSeries(s).map((line) => {
+    const pos = s.players[line.playerId]?.pos ?? null;
+    return {
+      id: line.playerId,
+      label: playerName(s, line.playerId),
+      emphasis: line.starting,
+      points: line.points.map((p) => ({
+        ...p,
+        edge:
+          p.projected == null
+            ? null
+            : scoringEdge(
+                s.projectionsByWeek[p.week]?.[line.playerId]?.stats,
+                s.league.scoring_settings,
+                pos,
+              ),
+      })),
+    };
+  });
+}
+
+/**
+ * The season chart overlay: every rostered player as a line, starters bright
+ * and bench receded, with identity on tap rather than seventeen hues.
+ */
+export function renderChartModal(
+  s: AppState,
+  selectedId: string | null,
+  horizon: { loading: boolean; loadedThrough: number; filter: "all" | "starters" },
+): { html: string; series: EmphasisSeries[]; geometry: ReturnType<typeof emphasisLineChart>["geometry"] } {
+  const everyone = chartSeries(s);
+  const series =
+    horizon.filter === "starters" ? everyone.filter((x) => x.emphasis) : everyone;
+
+  const lines = rosterSeries(s);
+  // Scale against the full roster either way, so switching the filter does not
+  // silently rescale the axis under the reader.
+  const max = seriesMax(lines);
+  const weeks = populatedWeeks(lines);
+  const { svg, geometry } = emphasisLineChart(series, { weeks, max, selectedId });
+
+  const selected = series.find((x) => x.id === selectedId);
+  const starterCount = everyone.filter((x) => x.emphasis).length;
+
+  const legend =
+    `<div class="legend">` +
+    `<span><i class="swatch" style="background:var(--accent)"></i>Starters (${starterCount})</span>` +
+    (horizon.filter === "all"
+      ? `<span><i class="swatch" style="background:var(--ink-faint);opacity:.5"></i>Bench (${everyone.length - starterCount})</span>`
+      : "") +
+    `<span><i class="swatch swatch-dash"></i>Projected</span>` +
+    (selected
+      ? `<span><i class="swatch" style="background:var(--good)"></i>Selected</span>`
+      : "") +
+    `</div>`;
+
+  // One filter row, above the chart it scopes.
+  const filterRow =
+    `<div class="filters">` +
+    (["all", "starters"] as const)
+      .map(
+        (value) =>
+          `<button type="button" class="chip${
+            horizon.filter === value ? " is-on" : ""
+          }" data-chart-filter="${value}">${
+            value === "all" ? `All ${everyone.length}` : `Starters only`
+          }</button>`,
+      )
+      .join("") +
+    `</div>`;
+
+  const remaining = 17 - horizon.loadedThrough;
+  const loadMore =
+    remaining > 0
+      ? `<button type="button" class="linkish" data-load-horizon="1"${
+          horizon.loading ? " disabled" : ""
+        }>${
+          horizon.loading
+            ? "Loading projections…"
+            : `Load projections for the next weeks (~2 MB each)`
+        }</button>`
+      : "";
+
+  return {
+    html:
+      `<div class="sheet-backdrop" data-close-chart="1"></div>` +
+      `<div class="sheet" role="dialog" aria-modal="true" aria-label="Season chart">
+        <div class="sheet-head">
+          <h2>Season by week</h2>
+          <button type="button" class="sheet-close" data-close-chart="1" aria-label="Close">×</button>
+        </div>
+        <p class="hint">Points scored, continuing into projections. Tap a line to identify it.</p>
+        ${filterRow}
+        <div class="chart-wrap">${svg}</div>
+        ${legend}
+        <div class="readout" id="chart-readout">${
+          selected
+            ? ""
+            : '<span class="faint">Tap any line for the player and week.</span>'
+        }</div>
+        ${loadMore}
+        <p class="hint" style="margin-top:10px">
+          Every value here is also in the roster table behind this panel.
+        </p>
+      </div>`,
+    series,
+    geometry,
+  };
 }
 
 // --- Performance ------------------------------------------------------------

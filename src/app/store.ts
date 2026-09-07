@@ -70,6 +70,12 @@ export interface AppState {
   transactions: Transaction[];
   trending: TrendingPlayer[];
   projections: Record<string, Projection>;
+  /**
+   * Projections for further weeks, keyed by week then player_id. Populated on
+   * demand only: one week is ~2MB over the wire, so eagerly loading a season
+   * would cost ~34MB on a phone.
+   */
+  projectionsByWeek: Record<number, Record<string, Projection>>;
   players: PlayerIndex;
   /** True while the shipped index is in use and the live one is still loading. */
   playersProvisional: boolean;
@@ -286,6 +292,7 @@ export async function loadAll(opts: LoadOptions = {}): Promise<AppState> {
     transactions,
     trending,
     projections,
+    projectionsByWeek: { [week]: projections },
     players,
     playersProvisional: provisional,
     prevSeason,
@@ -294,6 +301,54 @@ export async function loadAll(opts: LoadOptions = {}): Promise<AppState> {
     scoresFetchedAt,
     errors,
   };
+}
+
+/** How many weeks ahead the on-demand projection load reaches. */
+export const PROJECTION_HORIZON = 4;
+
+/**
+ * Fetch projections for the weeks after the current one, for the season chart.
+ *
+ * Deliberately not part of the initial load. Each week is roughly 2MB over the
+ * wire and only a handful of players are ever plotted, so the response is
+ * trimmed to the requested ids before being cached — 18KB a week instead of
+ * two megabytes.
+ */
+export async function loadProjectionHorizon(
+  season: string,
+  fromWeek: number,
+  keep: Set<string>,
+  onWeek?: (week: number, loaded: number, total: number) => void,
+): Promise<Record<number, Record<string, Projection>>> {
+  const out: Record<number, Record<string, Projection>> = {};
+  const weeks: number[] = [];
+  for (let w = fromWeek; w < fromWeek + PROJECTION_HORIZON && w <= 17; w++) {
+    weeks.push(w);
+  }
+
+  for (const [i, week] of weeks.entries()) {
+    try {
+      const hit = await cachedBlob(
+        `projections/${season}/${week}/roster`,
+        TTL.projections,
+        async () => {
+          const all = await getProjections(season, week);
+          const trimmed: Record<string, Projection> = {};
+          for (const id of keep) {
+            const row = all[id];
+            if (row) trimmed[id] = row;
+          }
+          return trimmed;
+        },
+      );
+      out[week] = hit.data;
+    } catch {
+      // A missing week leaves a gap in the line rather than failing the chart.
+    }
+    onWeek?.(week, i + 1, weeks.length);
+  }
+
+  return out;
 }
 
 /** Every player currently on a roster, for the free-agent set. */

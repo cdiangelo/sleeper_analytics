@@ -9,8 +9,19 @@ import "./styles.css";
 
 import { describeAge } from "./lib/cache.js";
 import { playedWeeks } from "./lib/metrics.js";
-import { loadAll, type AppState } from "./app/store.js";
-import { renderSubtitle, renderView, type Tab } from "./app/views.js";
+import {
+  loadAll,
+  loadProjectionHorizon,
+  myRosterId,
+  type AppState,
+} from "./app/store.js";
+import { nearestPoint, type ChartGeometry, type EmphasisSeries } from "./app/charts.js";
+import {
+  renderChartModal,
+  renderSubtitle,
+  renderView,
+  type Tab,
+} from "./app/views.js";
 
 const TABS: Tab[] = ["now", "team", "performance", "league", "waivers"];
 /** Matches the current-week matchup TTL, so a poll always fetches. */
@@ -113,6 +124,160 @@ function isGameWindow(): boolean {
   const day = new Date().getDay();
   return day === 0 || day === 1 || day === 4;
 }
+
+// --- season chart sheet -----------------------------------------------------
+
+let sheetOpen = false;
+let selectedPlayer: string | null = null;
+let horizonLoading = false;
+let chartFilter: "all" | "starters" = "all";
+let chartSeries: EmphasisSeries[] = [];
+let chartGeometry: ChartGeometry | null = null;
+
+const sheetHost = document.createElement("div");
+document.body.appendChild(sheetHost);
+
+function loadedThrough(): number {
+  if (!state) return 0;
+  return Math.max(0, ...Object.keys(state.projectionsByWeek).map(Number));
+}
+
+function paintSheet() {
+  if (!state || !sheetOpen) {
+    sheetHost.innerHTML = "";
+    return;
+  }
+  const { html, series, geometry } = renderChartModal(state, selectedPlayer, {
+    loading: horizonLoading,
+    loadedThrough: loadedThrough(),
+    filter: chartFilter,
+  });
+  sheetHost.innerHTML = html;
+  chartSeries = series;
+  chartGeometry = geometry;
+  if (selectedPlayer) showReadout();
+}
+
+function closeSheet() {
+  sheetOpen = false;
+  selectedPlayer = null;
+  sheetHost.innerHTML = "";
+}
+
+/**
+ * Player names come from Sleeper, so the readout is assembled with textContent
+ * rather than by concatenating strings into innerHTML.
+ */
+function showReadout(week?: number, value?: number, projected?: boolean) {
+  const host = document.getElementById("chart-readout");
+  const line = chartSeries.find((s) => s.id === selectedPlayer);
+  if (!host || !line) return;
+
+  host.textContent = "";
+  if (week == null || value == null) {
+    const hint = document.createElement("span");
+    hint.className = "faint";
+    hint.textContent = `${line.label} — tap a point for a week.`;
+    host.appendChild(hint);
+    return;
+  }
+
+  const strong = document.createElement("span");
+  strong.className = "readout-value";
+  strong.textContent = value.toFixed(1);
+
+  const name = document.createElement("span");
+  name.className = "readout-name";
+  name.textContent = ` ${line.label} · week ${week} · ${
+    projected ? "projected" : "scored"
+  }${line.emphasis ? " · starting" : " · bench"}`;
+
+  host.append(strong, name);
+
+  // The half-PPR comparison that used to be a column.
+  const edge = line.points.find((p) => p.week === week)?.edge;
+  if (typeof edge === "number" && Math.abs(edge) >= 0.05) {
+    const bonus = document.createElement("span");
+    bonus.className = "sub";
+    bonus.textContent = `${edge > 0 ? "+" : "−"}${Math.abs(edge).toFixed(
+      1,
+    )} vs half PPR from this league's bonuses`;
+    host.appendChild(bonus);
+  }
+}
+
+async function loadHorizon() {
+  if (!state || horizonLoading) return;
+  const mine = state.rosters.find((r) => r.roster_id === myRosterId());
+  const keep = new Set(mine?.players ?? []);
+  if (keep.size === 0) return;
+
+  horizonLoading = true;
+  paintSheet();
+  try {
+    const extra = await loadProjectionHorizon(
+      state.state.season,
+      loadedThrough() + 1,
+      keep,
+    );
+    state = { ...state, projectionsByWeek: { ...state.projectionsByWeek, ...extra } };
+    paint();
+  } finally {
+    horizonLoading = false;
+    paintSheet();
+  }
+}
+
+document.addEventListener("click", (event) => {
+  const target = event.target as HTMLElement | null;
+  if (!target) return;
+
+  const opener = target.closest<HTMLElement>("[data-open-chart]");
+  if (opener) {
+    const id = opener.dataset.openChart!;
+    selectedPlayer = id === "all" ? null : id;
+    sheetOpen = true;
+    paintSheet();
+    return;
+  }
+
+  if (target.closest("[data-close-chart]")) {
+    closeSheet();
+    return;
+  }
+
+  const filterBtn = target.closest<HTMLElement>("[data-chart-filter]");
+  if (filterBtn) {
+    chartFilter = filterBtn.dataset.chartFilter as "all" | "starters";
+    paintSheet();
+    return;
+  }
+
+  if (target.closest("[data-load-horizon]")) {
+    void loadHorizon();
+    return;
+  }
+
+  // Nearest-point hit testing: the reader only has to be closest to a line,
+  // never land on a 2px stroke.
+  const svg = target.closest(".chart-tap");
+  if (svg && chartGeometry) {
+    const rect = svg.getBoundingClientRect();
+    const ev = event as MouseEvent;
+    const vx = ((ev.clientX - rect.left) / rect.width) * chartGeometry.vbW;
+    const vy = ((ev.clientY - rect.top) / rect.height) * chartGeometry.vbH;
+    const hit = nearestPoint(chartSeries, chartGeometry, vx, vy);
+    if (hit) {
+      selectedPlayer = hit.series.id;
+      paintSheet();
+      showReadout(hit.week, hit.value, hit.projected);
+    }
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && sheetOpen) closeSheet();
+});
 
 for (const btn of document.querySelectorAll<HTMLButtonElement>(".tab")) {
   btn.addEventListener("click", () => {

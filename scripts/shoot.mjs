@@ -19,6 +19,15 @@ import { chromium } from "playwright";
 const args = process.argv.slice(2);
 const FORCE_EMPTY = args.includes("--empty");
 const DARK = args.includes("--dark");
+/**
+ * --weeks N fabricates N played weeks so the season charts can be inspected
+ * before the season provides any. The numbers are synthetic and never leave
+ * this script; it exists because a chart with one dot per player cannot be
+ * reviewed, and week 8 is not something you can wait for.
+ */
+const SIM_WEEKS = Number(
+  (args.find((a) => a.startsWith("--weeks=")) ?? "").split("=")[1] ?? 0,
+);
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173/";
 const OUT = path.resolve(process.cwd(), "screenshots");
 
@@ -26,12 +35,45 @@ const snap = JSON.parse(readFileSync("fixtures/league-state.json", "utf8"));
 const players = JSON.parse(readFileSync("public/players.json", "utf8"));
 const PREV_LEAGUE = "1257104727066292224";
 
+/**
+ * Deterministic pseudo-random weekly scores, so a run is reproducible and two
+ * screenshots of the same week are comparable.
+ */
+function seeded(week, id) {
+  let h = week * 2654435761;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+  return (h % 1000) / 1000;
+}
+
+function simulateWeek(week, rows) {
+  return rows.map((row) => {
+    const points = {};
+    let total = 0;
+    for (const id of row.players ?? []) {
+      // Centre on the player's own projection so the shape stays plausible.
+      const base = 12;
+      const value = Math.max(0, base * (0.35 + seeded(week, id) * 1.5));
+      points[id] = Math.round(value * 10) / 10;
+      if ((row.starters ?? []).includes(id)) total += points[id];
+    }
+    return {
+      ...row,
+      points: Math.round(total * 10) / 10,
+      players_points: points,
+      starters_points: (row.starters ?? []).map((id) => points[id] ?? 0),
+    };
+  });
+}
+
 /** Answer a Sleeper URL from the snapshot. */
 function respond(url) {
   const u = new URL(url);
   const p = u.pathname;
 
-  if (p === "/v1/state/nfl") return snap.state;
+  // Advance the reported week too, or the app never asks for the fabricated ones.
+  if (p === "/v1/state/nfl") {
+    return SIM_WEEKS > 0 ? { ...snap.state, week: SIM_WEEKS } : snap.state;
+  }
 
   // The prior-season league must not fall through to the current one, or the
   // "last season" card renders this year's data as history.
@@ -51,8 +93,11 @@ function respond(url) {
 
   const matchup = p.match(/\/matchups\/(\d+)$/);
   if (matchup) {
-    const rows = snap.matchups[matchup[1]] ?? [];
-    return FORCE_EMPTY ? rows.map((r) => ({ ...r, points: 0 })) : rows;
+    const week = Number(matchup[1]);
+    const rows = snap.matchups[matchup[1]] ?? snap.matchups[1] ?? [];
+    if (FORCE_EMPTY) return rows.map((r) => ({ ...r, points: 0 }));
+    if (SIM_WEEKS > 0 && week <= SIM_WEEKS) return simulateWeek(week, rows);
+    return snap.matchups[matchup[1]] ?? [];
   }
 
   const tx = p.match(/\/transactions\/(\d+)$/);
@@ -113,7 +158,7 @@ for (const tab of tabs) {
   await page.waitForSelector(".card, .stats", { timeout: 15_000 });
   await page.waitForTimeout(250);
 
-  const suffix = `${FORCE_EMPTY ? "-empty" : ""}${DARK ? "-dark" : ""}`;
+  const suffix = `${FORCE_EMPTY ? "-empty" : ""}${DARK ? "-dark" : ""}${SIM_WEEKS ? `-w${SIM_WEEKS}` : ""}`;
   await page.screenshot({ path: path.join(OUT, `${tab}${suffix}.png`), fullPage: true });
 
   // A screen that renders nothing legible is a failure even if it does not throw.
@@ -130,6 +175,39 @@ for (const tab of tabs) {
   );
   if (overflow) problems.push(`${tab}: horizontal overflow at 390px`);
 }
+
+// The season chart lives behind a tap, so it needs its own pass.
+await page.goto(`${BASE}#/team`, { waitUntil: "networkidle" });
+await page.waitForSelector("[data-open-chart]", { timeout: 15_000 });
+await page.click('[data-open-chart="all"]');
+await page.waitForSelector(".sheet", { timeout: 5000 });
+await page.waitForTimeout(300);
+
+// Exercise nearest-point hit testing. In preseason every player has a single
+// week-1 dot near the left edge, so a mid-plot tap correctly selects nothing —
+// try a few positions and require only that one of them lands.
+const svg = await page.locator(".chart-tap").boundingBox();
+let readout = "";
+if (svg) {
+  for (const [fx, fy] of [
+    [0.45, 0.45],
+    [0.12, 0.5],
+    [0.08, 0.35],
+  ]) {
+    await page.mouse.click(svg.x + svg.width * fx, svg.y + svg.height * fy);
+    await page.waitForTimeout(200);
+    readout = (await page.locator("#chart-readout").innerText()).trim();
+    if (readout && !readout.startsWith("Tap any line")) break;
+  }
+}
+
+console.log(`\nchart readout after tap: ${readout || "(empty)"}`);
+if (!readout || readout.startsWith("Tap any line")) {
+  problems.push("chart: no tap position selected a line");
+}
+
+const suffix = `${FORCE_EMPTY ? "-empty" : ""}${DARK ? "-dark" : ""}${SIM_WEEKS ? `-w${SIM_WEEKS}` : ""}`;
+await page.screenshot({ path: path.join(OUT, `chart${suffix}.png`) });
 
 await browser.close();
 
