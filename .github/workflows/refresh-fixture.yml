@@ -11,9 +11,11 @@ on:
     # the code that produced it. Ignoring fixtures/ keeps the job's own commit
     # from re-triggering it.
     paths:
-      - "src/lib/**"
+      # Only what actually changes the snapshot's contents or shape. A wider
+      # filter re-commits a 3.4MB fixture on unrelated edits.
+      - "src/lib/sleeper.ts"
+      - "src/lib/constants.ts"
       - "scripts/dump.ts"
-      - ".github/workflows/refresh-fixture.yml"
   schedule:
     # Tuesday 13:00 UTC — after Monday night games and after waivers clear.
     - cron: "0 13 * * 2"
