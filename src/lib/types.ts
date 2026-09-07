@@ -209,6 +209,14 @@ export interface LeagueSnapshot {
   trendingAdds: TrendingPlayer[];
   /** Projections for the upcoming week, keyed by player_id. May be empty. */
   projections: Record<string, Projection>;
+  /** Last season's final state. Immutable history, fetched once. */
+  prevSeason: PrevSeason | null;
   /** Non-fatal problems hit while fetching, surfaced in the UI as warnings. */
   warnings: string[];
+}
+
+export interface PrevSeason {
+  league: League;
+  users: LeagueUser[];
+  rosters: Roster[];
 }

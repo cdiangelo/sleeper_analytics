@@ -49,6 +49,12 @@ function playerName(s: AppState, id: string): string {
   return s.players[id]?.name ?? id;
 }
 
+/** Owner name for the current user, used to find them across seasons where
+ *  roster ids do not carry over. */
+function mineOwner(s: AppState): string | undefined {
+  return s.teams.find((t) => t.rosterId === myRosterId())?.owner;
+}
+
 function teamName(s: AppState, rosterId: number | null | undefined): string {
   if (rosterId == null) return "—";
   return s.teams.find((t) => t.rosterId === rosterId)?.name ?? `Roster ${rosterId}`;
@@ -617,7 +623,31 @@ function renderLeague(s: AppState): string {
         empty("No claims yet", "FAAB spending appears here once waivers start running."),
       );
 
-  return standingsCard + faab + spendCard;
+  // Before this season has any results, last year's finish is the only real
+  // signal about who is good.
+  const prev = s.prevSeason;
+  const prevCard = prev?.teams.length
+    ? card(
+        `${prev.season} final standings`,
+        played.length ? "How the league finished last season" : "Until this season has results, this is what there is to go on",
+        `<table><thead><tr><th>Team</th><th>Rec</th><th>PF</th></tr></thead><tbody>${[...prev.teams]
+          .sort(
+            (a, b) =>
+              b.wins - a.wins || b.pointsFor - a.pointsFor,
+          )
+          .map(
+            (t, i) => `<tr${t.owner === mineOwner(s) ? ' class="is-me"' : ""}>
+              <td><span class="faint">${i + 1}.</span> ${esc(t.name)}
+                <span class="sub">${esc(t.owner)}</span></td>
+              <td>${esc(record({ wins: t.wins, losses: t.losses, ties: t.ties }))}</td>
+              <td>${esc(num(t.pointsFor, 0))}</td>
+            </tr>`,
+          )
+          .join("")}</tbody></table>`,
+      )
+    : "";
+
+  return standingsCard + prevCard + faab + spendCard;
 }
 
 // --- Waivers ----------------------------------------------------------------

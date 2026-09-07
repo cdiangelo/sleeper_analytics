@@ -24,6 +24,7 @@ const OUT = path.resolve(process.cwd(), "screenshots");
 
 const snap = JSON.parse(readFileSync("fixtures/league-state.json", "utf8"));
 const players = JSON.parse(readFileSync("public/players.json", "utf8"));
+const PREV_LEAGUE = "1257104727066292224";
 
 /** Answer a Sleeper URL from the snapshot. */
 function respond(url) {
@@ -31,6 +32,16 @@ function respond(url) {
   const p = u.pathname;
 
   if (p === "/v1/state/nfl") return snap.state;
+
+  // The prior-season league must not fall through to the current one, or the
+  // "last season" card renders this year's data as history.
+  if (p.includes(`/league/${PREV_LEAGUE}`)) {
+    if (!snap.prevSeason) return null;
+    if (p.endsWith("/users")) return snap.prevSeason.users;
+    if (p.endsWith("/rosters")) return snap.prevSeason.rosters;
+    return snap.prevSeason.league;
+  }
+
   if (p.endsWith("/users")) return snap.users;
   if (p.endsWith("/rosters")) return snap.rosters;
   if (/\/league\/[^/]+$/.test(p)) return snap.league;

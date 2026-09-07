@@ -15,7 +15,13 @@ import {
   writeBlob,
   type Staleness,
 } from "../lib/cache.js";
-import { FAAB_BUDGET, LEAGUE_ID, DRAFT_ID, ROSTER_ID } from "../lib/constants.js";
+import {
+  FAAB_BUDGET,
+  LEAGUE_ID,
+  DRAFT_ID,
+  PREV_LEAGUE,
+  ROSTER_ID,
+} from "../lib/constants.js";
 import { startingSlots } from "../lib/metrics.js";
 import {
   allRosteredPlayers,
@@ -67,6 +73,8 @@ export interface AppState {
   players: PlayerIndex;
   /** True while the shipped index is in use and the live one is still loading. */
   playersProvisional: boolean;
+  /** Last season's final standings, or null if the prior league is gone. */
+  prevSeason: { season: string; teams: Team[] } | null;
   reconciliation: Reconciliation;
   scoringMismatches: ScoringMismatch[];
   /** Age of the most time-sensitive thing on screen: the live scores. */
@@ -233,6 +241,29 @@ export async function loadAll(opts: LoadOptions = {}): Promise<AppState> {
     {} as Record<string, Projection>,
   );
 
+  // Last season is finished and immutable, so it is fetched once and held for
+  // a month. This is optional context: if the prior league is gone or fails to
+  // load, the card is simply absent. It must not raise an error banner, which
+  // is reserved for data the screens actually need.
+  let prevSeason: AppState["prevSeason"] = null;
+  try {
+    const [prevLeague, prevUsers, prevRosters] = await Promise.all([
+      cached(`prev/league`, TTL.prevSeason, () => getLeague(PREV_LEAGUE)),
+      cached(`prev/users`, TTL.prevSeason, () => getLeagueUsers(PREV_LEAGUE)),
+      cached(`prev/rosters`, TTL.prevSeason, () => getRosters(PREV_LEAGUE)),
+    ]);
+    prevSeason = {
+      season: prevLeague.data.season,
+      teams: buildTeams(
+        prevUsers.data,
+        prevRosters.data,
+        prevLeague.data.settings.waiver_budget ?? FAAB_BUDGET,
+      ),
+    };
+  } catch {
+    prevSeason = null;
+  }
+
   const { players, provisional } = await loadPlayers(
     opts.onPlayerIndex ?? (() => {}),
   );
@@ -257,6 +288,7 @@ export async function loadAll(opts: LoadOptions = {}): Promise<AppState> {
     projections,
     players,
     playersProvisional: provisional,
+    prevSeason,
     reconciliation,
     scoringMismatches: verifyScoring(league.scoring_settings),
     scoresFetchedAt,

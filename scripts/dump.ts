@@ -18,6 +18,7 @@ import {
   DRAFT_ROUNDS,
   KEEPERS_2026,
   LEAGUE_ID,
+  PREV_LEAGUE,
   ROSTER_ID,
   TEAM_COUNT,
 } from "../src/lib/constants.js";
@@ -128,6 +129,22 @@ async function main() {
     `Player index: ${Object.keys(rawPlayers).length} raw -> ${Object.keys(players).length} fantasy-relevant`,
   );
 
+  const prevSeason = await soft(
+    "previous season",
+    async () => {
+      const [prevLeague, prevUsers, prevRosters] = await Promise.all([
+        getLeague(PREV_LEAGUE),
+        getLeagueUsers(PREV_LEAGUE),
+        getRosters(PREV_LEAGUE),
+      ]);
+      return { league: prevLeague, users: prevUsers, rosters: prevRosters };
+    },
+    null,
+  );
+  console.log(
+    `Previous season: ${prevSeason ? `${prevSeason.league.season}, ${prevSeason.rosters.length} teams` : "unavailable"}`,
+  );
+
   const snapshot: LeagueSnapshot = {
     fetchedAt: new Date().toISOString(),
     state,
@@ -140,6 +157,7 @@ async function main() {
     transactions,
     trendingAdds,
     projections,
+    prevSeason,
     warnings,
   };
 

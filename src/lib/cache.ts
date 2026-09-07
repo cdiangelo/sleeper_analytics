@@ -42,6 +42,8 @@ export const TTL = {
   trending: 60 * 60_000,
   projections: 12 * 60 * 60_000,
   players: 7 * 24 * 60 * 60_000,
+  /** A finished season never changes. */
+  prevSeason: 30 * 24 * 60 * 60_000,
 } as const;
 
 export function describeAge(fetchedAt: number, now = Date.now()): Staleness {
