@@ -147,6 +147,39 @@ async function loadPlayers(
   return { players: await live, provisional: false };
 }
 
+/**
+ * Whole-season projections, shipped with the build.
+ *
+ * The alternative was ~34MB of Sleeper requests from the phone, which is why
+ * this was previously hidden behind an opt-in button — and why the season
+ * lines had nothing to draw. Trimmed to rostered players and scored stat keys
+ * it is ~0.5MB, so it just loads.
+ */
+async function loadSeasonProjections(): Promise<
+  Record<number, Record<string, Projection>>
+> {
+  try {
+    const res = await fetch(`${import.meta.env.BASE_URL}projections.json`);
+    if (!res.ok) return {};
+    const data = (await res.json()) as {
+      weeks?: Record<string, Record<string, Record<string, number>>>;
+    };
+
+    const out: Record<number, Record<string, Projection>> = {};
+    for (const [week, players] of Object.entries(data.weeks ?? {})) {
+      const rows: Record<string, Projection> = {};
+      for (const [playerId, stats] of Object.entries(players)) {
+        rows[playerId] = { player_id: playerId, stats };
+      }
+      out[Number(week)] = rows;
+    }
+    return out;
+  } catch {
+    // The season chart falls back to whatever the live fetch provided.
+    return {};
+  }
+}
+
 export interface LoadOptions {
   force?: boolean;
   /** Called when the background player-index refresh completes. */
@@ -270,6 +303,8 @@ export async function loadAll(opts: LoadOptions = {}): Promise<AppState> {
     prevSeason = null;
   }
 
+  const seasonProjections = await loadSeasonProjections();
+
   const { players, provisional } = await loadPlayers(
     opts.onPlayerIndex ?? (() => {}),
   );
@@ -292,7 +327,12 @@ export async function loadAll(opts: LoadOptions = {}): Promise<AppState> {
     transactions,
     trending,
     projections,
-    projectionsByWeek: { [week]: projections },
+    // The shipped season is the baseline; the live fetch wins for the current
+    // week, where an injury can move a number after the weekly build ran.
+    projectionsByWeek: {
+      ...seasonProjections,
+      ...(Object.keys(projections).length > 0 ? { [week]: projections } : {}),
+    },
     players,
     playersProvisional: provisional,
     prevSeason,

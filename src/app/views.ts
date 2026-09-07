@@ -517,15 +517,17 @@ export function renderChartModal(
       .join("") +
     `</div>`;
 
-  const remaining = 17 - horizon.loadedThrough;
+  // The season normally ships with the build. This is the fallback for when
+  // that asset is missing or stale, not the usual path.
+  const weeksLoaded = Object.keys(s.projectionsByWeek).length;
   const loadMore =
-    remaining > 0
+    weeksLoaded < 3
       ? `<button type="button" class="linkish" data-load-horizon="1"${
           horizon.loading ? " disabled" : ""
         }>${
           horizon.loading
             ? "Loading projections…"
-            : `Load projections for the next weeks (~2 MB each)`
+            : "Fetch upcoming projections from Sleeper"
         }</button>`
       : "";
 

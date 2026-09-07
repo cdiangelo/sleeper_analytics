@@ -37,7 +37,12 @@ import {
   getTrendingAdds,
   trimPlayerIndex,
 } from "../src/lib/sleeper.js";
-import type { LeagueSnapshot, Matchup, Transaction } from "../src/lib/types.js";
+import type {
+  LeagueSnapshot,
+  Matchup,
+  Projection,
+  Transaction,
+} from "../src/lib/types.js";
 
 const OUT_DIR = path.resolve(process.cwd(), "fixtures");
 /**
@@ -129,6 +134,48 @@ async function main() {
     `Player index: ${Object.keys(rawPlayers).length} raw -> ${Object.keys(players).length} fantasy-relevant`,
   );
 
+  /**
+   * Whole-season projections, shipped with the build.
+   *
+   * Fetching these from a phone is hopeless — a week is ~2MB and the season is
+   * ~34MB. But only rostered players are ever plotted, and only stat keys this
+   * league scores affect the math, so trimming on both axes leaves ~29KB a
+   * week. The runner pays the 34MB once a week so the client pays 0.5MB.
+   */
+  const rostered = new Set<string>();
+  for (const roster of rosters) for (const id of roster.players ?? []) rostered.add(id);
+  const scoredKeys = new Set(Object.keys(league.scoring_settings));
+
+  const seasonProjections: Record<number, Record<string, Record<string, number>>> = {};
+  let projectionWeeks = 0;
+
+  for (let w = 1; w <= 17; w++) {
+    const rows = await soft(
+      `season projections w${w}`,
+      () => getProjections(state.season, w),
+      {} as Record<string, Projection>,
+    );
+
+    const trimmed: Record<string, Record<string, number>> = {};
+    for (const id of rostered) {
+      const stats = rows[id]?.stats;
+      if (!stats) continue;
+      const slim: Record<string, number> = {};
+      for (const [key, value] of Object.entries(stats)) {
+        if (scoredKeys.has(key) && typeof value === "number") slim[key] = value;
+      }
+      if (Object.keys(slim).length > 0) trimmed[id] = slim;
+    }
+
+    if (Object.keys(trimmed).length > 0) {
+      seasonProjections[w] = trimmed;
+      projectionWeeks++;
+    }
+  }
+  console.log(
+    `Season projections: ${projectionWeeks} weeks with stat lines, ${rostered.size} rostered players`,
+  );
+
   const prevSeason = await soft(
     "previous season",
     async () => {
@@ -168,8 +215,18 @@ async function main() {
     JSON.stringify(snapshot, null, 2),
   );
   await writeFile(path.join(PUBLIC_DIR, "players.json"), JSON.stringify(players));
+  await writeFile(
+    path.join(PUBLIC_DIR, "projections.json"),
+    JSON.stringify({
+      season: state.season,
+      generatedAt: new Date().toISOString(),
+      weeks: seasonProjections,
+    }),
+  );
 
-  console.log(`\nWrote fixtures/league-state.json and public/players.json`);
+  console.log(
+    `\nWrote fixtures/league-state.json, public/players.json and public/projections.json`,
+  );
 
   verify(snapshot, players);
 }

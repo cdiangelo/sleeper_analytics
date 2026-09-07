@@ -139,6 +139,39 @@ await page.route("**/players.json", (route) =>
   }),
 );
 
+/**
+ * The real public/projections.json is produced by the CI dump, which needs
+ * network access to Sleeper. Stand in for it here by spreading the fixture's
+ * one week of projections across the season with per-week variation, so the
+ * season lines can be checked. Synthetic, and never written to disk.
+ */
+await page.route("**/projections.json", (route) => {
+  const scored = new Set(Object.keys(snap.league.scoring_settings));
+  const rostered = new Set();
+  for (const r of snap.rosters) for (const id of r.players ?? []) rostered.add(id);
+
+  const weeks = {};
+  for (let w = 1; w <= 17; w++) {
+    const rows = {};
+    for (const proj of Object.values(snap.projections)) {
+      if (!rostered.has(proj.player_id)) continue;
+      const wobble = 0.7 + seeded(w, proj.player_id) * 0.6;
+      const slim = {};
+      for (const [k, v] of Object.entries(proj.stats ?? {})) {
+        if (scored.has(k) && typeof v === "number") slim[k] = v * wobble;
+      }
+      if (Object.keys(slim).length) rows[proj.player_id] = slim;
+    }
+    if (Object.keys(rows).length) weeks[w] = rows;
+  }
+
+  return route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ season: snap.state.season, weeks }),
+  });
+});
+
 const problems = [];
 page.on("console", (msg) => {
   // The 404 on /v1/players/nfl is deliberate above, to exercise the

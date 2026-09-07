@@ -78,8 +78,15 @@ read as a result.
 
 ## Fixture and CI
 
-`fixtures/league-state.json` is a full league snapshot, and
-`public/players.json` is the trimmed player index that ships with the build.
+`fixtures/league-state.json` is a full league snapshot, `public/players.json`
+is the trimmed player index, and `public/projections.json` is the whole
+season's projections — both of the latter ship with the build.
+
+Season projections are the interesting one. Fetching them live is hopeless: a
+single week is ~2MB and the season is ~34MB, far too much for a phone. But
+only rostered players are ever plotted and only stat keys this league scores
+affect the math, so trimming on both axes leaves ~29KB a week — about 0.5MB
+for the season. The CI runner pays the 34MB once a week so the client doesn't.
 Both are refreshed by `.github/workflows/refresh-fixture.yml` — on a Tuesday
 cron, on changes to the fetch layer, or on manual dispatch.
 
