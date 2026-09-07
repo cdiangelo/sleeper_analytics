@@ -4,6 +4,9 @@
 
 import "./styles.css";
 
+// Tells the boot guard in index.html that the bundle actually ran.
+(globalThis as { __ggBooted?: boolean }).__ggBooted = true;
+
 import { describeAge } from "./lib/cache.js";
 import { playedWeeks } from "./lib/metrics.js";
 import { loadAll, type AppState } from "./app/store.js";

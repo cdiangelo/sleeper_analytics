@@ -19,7 +19,7 @@ import { chromium } from "playwright";
 const args = process.argv.slice(2);
 const FORCE_EMPTY = args.includes("--empty");
 const DARK = args.includes("--dark");
-const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173/sleeper_analytics/";
+const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173/";
 const OUT = path.resolve(process.cwd(), "screenshots");
 
 const snap = JSON.parse(readFileSync("fixtures/league-state.json", "utf8"));

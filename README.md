@@ -112,6 +112,18 @@ Pages itself, but the Actions token is not a repository admin, so that call
 comes back `Resource not accessible by integration` until the setting is
 flipped by hand once. Everything after that is automatic.
 
+The **Source** dropdown is the part that matters, and it is not the same as
+making the repository public. Left on the default *Deploy from a branch*,
+Pages serves the repository root — which means this `index.html` with its
+`<script src="/src/main.ts">` pointing at TypeScript no browser can run. The
+result is an unstyled page stuck on "Loading league…" while every Actions
+deploy quietly fails. The boot guard in `index.html` now names that failure
+rather than spinning forever.
+
+Assets build with a relative base, so the output runs from a project-site
+subdirectory, a user site at the root, a custom domain, or `vite preview`
+without reconfiguration.
+
 The site is served from `/sleeper_analytics/`; override with `BASE_PATH` for a
 custom domain. Add it to your home screen from Safari for the standalone app
 experience — the manifest and icons are already wired up.

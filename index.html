@@ -52,6 +52,27 @@
       </button>
     </nav>
 
+    <!--
+      Boot guard. If the app bundle never runs, the skeleton below would sit
+      on "Loading league…" forever and look like a Sleeper problem. It is
+      almost always a hosting problem: serving this source file instead of the
+      built output, which leaves the module script pointing at raw TypeScript.
+      Say so rather than spinning.
+    -->
+    <script>
+      window.__ggBooted = false;
+      setTimeout(function () {
+        if (window.__ggBooted) return;
+        var el = document.getElementById("view");
+        if (!el) return;
+        el.innerHTML =
+          '<div class="banner is-error"><h3>The app didn\'t start</h3>' +
+          "<p>The page loaded but its code did not. This is usually the host " +
+          "serving the repository source instead of the built output — check " +
+          "that GitHub Pages is set to deploy from GitHub Actions rather than " +
+          "from a branch.</p></div>";
+      }, 8000);
+    </script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
