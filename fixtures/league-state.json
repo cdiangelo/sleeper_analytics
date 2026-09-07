@@ -1,10 +1,10 @@
 {
-  "fetchedAt": "2026-09-07T02:48:00.531Z",
+  "fetchedAt": "2026-09-07T02:49:41.509Z",
   "state": {
     "week": 1,
     "leg": 1,
-    "season_type": "regular",
     "season": "2026",
+    "season_type": "regular",
     "league_season": "2026",
     "previous_season": "2025",
     "season_start_date": "2026-09-09",
