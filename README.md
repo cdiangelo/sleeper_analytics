@@ -105,7 +105,12 @@ node scripts/shoot.mjs --empty   # forces the preseason zero-score state
 ## Deploying
 
 `.github/workflows/deploy.yml` builds and publishes to GitHub Pages on push.
-It requires **Settings → Pages → Source: GitHub Actions** to be enabled once.
+
+**One-time setup:** go to **Settings → Pages** and set **Source** to
+**GitHub Actions**, then re-run the workflow. The workflow asks to enable
+Pages itself, but the Actions token is not a repository admin, so that call
+comes back `Resource not accessible by integration` until the setting is
+flipped by hand once. Everything after that is automatic.
 
 The site is served from `/sleeper_analytics/`; override with `BASE_PATH` for a
 custom domain. Add it to your home screen from Safari for the standalone app

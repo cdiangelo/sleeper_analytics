@@ -18,6 +18,7 @@ import { chromium } from "playwright";
 
 const args = process.argv.slice(2);
 const FORCE_EMPTY = args.includes("--empty");
+const DARK = args.includes("--dark");
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173/sleeper_analytics/";
 const OUT = path.resolve(process.cwd(), "screenshots");
 
@@ -59,6 +60,7 @@ const browser = await chromium.launch(
 const page = await browser.newPage({
   viewport: { width: 390, height: 844 },
   deviceScaleFactor: 2,
+  colorScheme: DARK ? "dark" : "light",
 });
 
 await page.route("**://api.sleeper.app/**", async (route) => {
@@ -100,7 +102,7 @@ for (const tab of tabs) {
   await page.waitForSelector(".card, .stats", { timeout: 15_000 });
   await page.waitForTimeout(250);
 
-  const suffix = FORCE_EMPTY ? "-empty" : "";
+  const suffix = `${FORCE_EMPTY ? "-empty" : ""}${DARK ? "-dark" : ""}`;
   await page.screenshot({ path: path.join(OUT, `${tab}${suffix}.png`), fullPage: true });
 
   // A screen that renders nothing legible is a failure even if it does not throw.
