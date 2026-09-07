@@ -22,6 +22,41 @@ import type {
   Transaction,
 } from "./types.js";
 
+/**
+ * How this league settles waiver claims.
+ *
+ * Read from the league rather than assumed: `waiver_budget` is present and set
+ * to 100 even in a rolling league, so trusting it renders FAAB dollars for a
+ * league that has never had any.
+ */
+export type WaiverMode = "rolling" | "reverse" | "faab";
+
+export function waiverMode(settings: Record<string, number>): WaiverMode {
+  switch (settings.waiver_type) {
+    case 2:
+      return "faab";
+    case 1:
+      return "reverse";
+    default:
+      return "rolling";
+  }
+}
+
+/**
+ * Rolling waivers are a one-shot resource: winning a claim sends you to the
+ * back of the queue. Priority 2 of 10 can outbid almost anyone, but only once.
+ */
+export function describeWaiverMode(mode: WaiverMode): string {
+  switch (mode) {
+    case "faab":
+      return "FAAB bidding";
+    case "reverse":
+      return "Priority by reverse standings, reset weekly";
+    default:
+      return "Rolling priority — a successful claim drops you to last";
+  }
+}
+
 export interface Team {
   rosterId: number;
   ownerId: string | null;

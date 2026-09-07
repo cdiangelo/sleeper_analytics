@@ -19,7 +19,13 @@ import {
   weekScores,
   type PositionLookup,
 } from "../lib/metrics.js";
-import { faabHistory, keeperOptions, freeAgents } from "../lib/normalize.js";
+import {
+  describeWaiverMode,
+  faabHistory,
+  freeAgents,
+  keeperOptions,
+  waiverMode,
+} from "../lib/normalize.js";
 import { depthChartContext, describeDepth } from "../lib/depth.js";
 import { describeChange } from "../lib/news.js";
 import { leaguePoints, scoringEdge } from "../lib/scoring.js";
@@ -833,33 +839,55 @@ function renderLeague(s: AppState): string {
     table,
   );
 
-  const faab = card(
-    "FAAB remaining",
-    "Who can still outbid you, and who is broke",
-    `<table><thead><tr><th>Team</th><th>Spent</th><th>Left</th><th></th></tr></thead><tbody>${[...s.teams]
-      .sort((a, b) => b.faabRemaining - a.faabRemaining)
-      .map(
-        (t) => `<tr${t.rosterId === myRosterId() ? ' class="is-me"' : ""}>
-          <td>${esc(t.name)}</td>
-          <td class="faint">$${t.faabUsed}</td>
-          <td>$${t.faabRemaining}</td>
-          <td style="width:52px">${barCell(t.faabRemaining, 100)}</td>
-        </tr>`,
-      )
-      .join("")}</tbody></table>`,
-  );
+  const mode = waiverMode(s.league.settings);
+
+  const faab =
+    mode === "faab"
+      ? card(
+          "FAAB remaining",
+          "Who can still outbid you, and who is broke",
+          `<table><thead><tr><th>Team</th><th>Spent</th><th>Left</th><th></th></tr></thead><tbody>${[...s.teams]
+            .sort((a, b) => b.faabRemaining - a.faabRemaining)
+            .map(
+              (t) => `<tr${t.rosterId === myRosterId() ? ' class="is-me"' : ""}>
+            <td>${esc(t.name)}</td>
+            <td class="faint">$${t.faabUsed}</td>
+            <td>$${t.faabRemaining}</td>
+            <td style="width:52px">${barCell(t.faabRemaining, 100)}</td>
+          </tr>`,
+            )
+            .join("")}</tbody></table>`,
+        )
+      : card(
+          "Waiver priority",
+          describeWaiverMode(mode),
+          `<table><thead><tr><th>Order</th><th>Team</th></tr></thead><tbody>${[...s.teams]
+            .filter((t) => t.waiverPosition != null)
+            .sort((a, b) => (a.waiverPosition ?? 99) - (b.waiverPosition ?? 99))
+            .map(
+              (t) => `<tr${t.rosterId === myRosterId() ? ' class="is-me"' : ""}>
+            <td>${t.waiverPosition}</td>
+            <td style="text-align:right">${esc(t.name)}</td>
+          </tr>`,
+            )
+            .join("")}</tbody></table>`,
+        );
 
   const spend = faabHistory(s.transactions).slice(0, 12);
   const spendCard = spend.length
     ? card(
         "Recent waiver claims",
-        "What things have actually cost in this league",
-        `<table><thead><tr><th>Player</th><th>Team</th><th>Bid</th></tr></thead><tbody>${spend
+        mode === "faab"
+          ? "What things have actually cost in this league"
+          : "Who has spent their priority, and on whom",
+        `<table><thead><tr><th>Player</th><th>Team</th>${
+          mode === "faab" ? "<th>Bid</th>" : "<th>Week</th>"
+        }</tr></thead><tbody>${spend
           .map(
             (f) => `<tr>
               <td>${esc(playerName(s, f.playerId))}</td>
               <td class="faint">${esc(teamName(s, f.rosterId))}</td>
-              <td>$${f.bid}</td>
+              <td>${mode === "faab" ? `$${f.bid}` : f.week}</td>
             </tr>`,
           )
           .join("")}</tbody></table>`,
@@ -1093,19 +1121,51 @@ function renderWaivers(s: AppState): string {
       )
     : "";
 
-  const budget = mine
-    ? card(
-        "Your budget",
-        "FAAB clears Tuesday, two-day process",
-        `<div class="stats">
+  const mode = waiverMode(s.league.settings);
+  const ahead = s.teams.filter(
+    (t) =>
+      t.waiverPosition != null &&
+      mine?.waiverPosition != null &&
+      t.waiverPosition < mine.waiverPosition,
+  );
+
+  const budget = !mine
+    ? ""
+    : mode === "faab"
+      ? card(
+          "Your budget",
+          "FAAB clears Tuesday, two-day process",
+          `<div class="stats">
           <div class="stat"><div class="stat-value">$${mine.faabRemaining}</div><div class="stat-label">Remaining</div></div>
           <div class="stat"><div class="stat-value">$${mine.faabUsed}</div><div class="stat-label">Spent</div></div>
           <div class="stat"><div class="stat-value">${
             s.teams.filter((t) => t.faabRemaining > mine.faabRemaining).length + 1
           }</div><div class="stat-label">Rank</div></div>
         </div>`,
-      )
-    : "";
+        )
+      : card(
+          "Your waiver priority",
+          "Claims clear Tuesday, two-day process",
+          `<div class="stats">
+          <div class="stat">
+            <div class="stat-value">${mine.waiverPosition ?? "—"}</div>
+            <div class="stat-label">Priority</div>
+            <div class="stat-note">of ${s.teams.length}</div>
+          </div>
+          <div class="stat">
+            <div class="stat-value">${ahead.length}</div>
+            <div class="stat-label">Ahead of you</div>
+            <div class="stat-note">${
+              ahead.length === 0 ? "you win any claim" : "can take a player first"
+            }</div>
+          </div>
+        </div>
+        <p class="hint" style="margin:10px 0 0">${
+          (mine.waiverPosition ?? 99) <= 3
+            ? "High priority is a one-shot resource: a successful claim sends you to the back of the queue. Worth spending on someone who starts, not a bench flier."
+            : "Low priority means contested players will be gone. Target names the teams above you do not need."
+        }</p>`,
+        );
 
   return budget + holesCard + targets + streamerCard + trendingCard;
 }
