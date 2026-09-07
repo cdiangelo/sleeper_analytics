@@ -688,3 +688,67 @@ tbody tr.is-me td:first-child {
   max-width: 40%;
   padding-left: 8px;
 }
+
+/* --- expandable waiver rows ------------------------------------------ */
+
+.row-toggle {
+  appearance: none;
+  border: 0;
+  background: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  width: 100%;
+  /* Comfortably past the 24px minimum touch target. */
+  min-height: 32px;
+}
+
+.caret {
+  color: var(--ink-faint);
+  font-size: 15px;
+  line-height: 1.1;
+  transition: transform 0.12s ease;
+  flex: none;
+}
+
+.caret.is-open {
+  transform: rotate(90deg);
+  color: var(--accent);
+}
+
+.expand-row > td {
+  padding: 0 0 10px;
+  border-top: 0;
+}
+
+.expand {
+  background: var(--surface-2);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.verdict {
+  margin: 0 0 4px;
+  font-size: 12.5px;
+  font-weight: 620;
+}
+
+/* The comparison table sits inside a row, so it drops the outer rules. */
+.compare {
+  font-size: 12.5px;
+}
+
+.compare td {
+  border-top: 1px solid var(--line);
+  padding: 6px 0;
+}
+
+.compare th {
+  font-size: 10px;
+}

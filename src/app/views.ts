@@ -28,6 +28,7 @@ import {
 } from "../lib/normalize.js";
 import { depthChartContext, describeDepth } from "../lib/depth.js";
 import { describeChange } from "../lib/news.js";
+import { compareToRoster, describeUpgrade } from "../lib/upgrade.js";
 import { leaguePoints, scoringEdge } from "../lib/scoring.js";
 import type { Matchup } from "../lib/types.js";
 import {
@@ -59,6 +60,14 @@ import {
 import { myRosterId, rosteredPlayers, type AppState } from "./store.js";
 
 export type Tab = "now" | "team" | "performance" | "league" | "waivers";
+
+/** View state that lives in the shell rather than in AppState. */
+export interface UiState {
+  /** Waiver target whose comparison panel is open. */
+  expandedTarget: string | null;
+}
+
+const NO_UI: UiState = { expandedTarget: null };
 
 // --- shared helpers ---------------------------------------------------------
 
@@ -925,9 +934,68 @@ function renderLeague(s: AppState): string {
   return standingsCard + prevCard + faab + spendCard;
 }
 
+/**
+ * The comparison behind a waiver target: who on your roster he would displace,
+ * and by how much. A ranked list answers "how good is he"; this answers the
+ * question that actually decides a claim, which is "better than what".
+ */
+function upgradeRow(s: AppState, targetId: string, position: string): string {
+  const mine = s.rosters.find((r) => r.roster_id === myRosterId());
+  const comparison = compareToRoster(
+    targetId,
+    position,
+    mine?.players ?? [],
+    (id) => s.players[id]?.pos ?? null,
+    startersFor(s, myRosterId()),
+    currentWeek(s),
+    (week, id) => projectedForWeek(s, week, id),
+  );
+
+  const target = comparison.target;
+  const body = comparison.openSlot
+    ? `<p class="hint" style="margin:0">Nothing rostered at ${esc(
+        position,
+      )} — this is an addition, not a swap.</p>`
+    : comparison.candidates.length === 0
+      ? `<p class="hint" style="margin:0">No comparable player on your roster.</p>`
+      : `<table class="compare"><thead><tr><th>Would replace</th><th>Wk</th><th>Rest</th><th>+/−</th></tr></thead><tbody>${comparison.candidates
+          .map(
+            (c) => `<tr>
+              <td>${esc(playerName(s, c.playerId))}<span class="sub">${
+                c.starting ? "starting" : "bench"
+              }</span></td>
+              <td class="faint">${
+                c.value.thisWeek == null ? "—" : esc(num(c.value.thisWeek))
+              }</td>
+              <td class="faint">${
+                c.value.restOfSeason == null ? "—" : esc(num(c.value.restOfSeason))
+              }</td>
+              <td class="${
+                c.deltaRestOfSeason == null ? "faint" : toneClass(c.deltaRestOfSeason)
+              }">${
+                c.deltaRestOfSeason == null ? "—" : esc(signed(c.deltaRestOfSeason))
+              }</td>
+            </tr>`,
+          )
+          .join("")}</tbody></table>`;
+
+  return `<tr class="expand-row"><td colspan="4">
+    <div class="expand">
+      <p class="verdict">${esc(describeUpgrade(comparison))}</p>
+      <p class="hint" style="margin:0 0 8px">Target projects ${
+        target.thisWeek == null ? "—" : esc(num(target.thisWeek))
+      } this week, ${
+        target.restOfSeason == null ? "—" : esc(num(target.restOfSeason))
+      } a week over the remaining ${target.weeks}. Rest-of-season drives the
+      call; a roster spot is held for months.</p>
+      ${body}
+    </div>
+  </td></tr>`;
+}
+
 // --- Waivers ----------------------------------------------------------------
 
-function renderWaivers(s: AppState): string {
+function renderWaivers(s: AppState, ui: UiState): string {
   const taken = rosteredPlayers(s);
   const available = freeAgents(s.players, taken);
   const trendingCount = new Map(s.trending.map((t) => [t.player_id, t.count]));
@@ -1047,25 +1115,28 @@ function renderWaivers(s: AppState): string {
               `<table><thead><tr><th>${esc(g.pos)}${
                 g.needed ? ' <span class="bad">need</span>' : ""
               }</th><th>Proj</th><th>POR</th><th>Adds</th></tr></thead><tbody>${g.rows
-                .map(
-                  (r) => {
-                    // The projection says how good he is; the depth chart says
-                    // whether he will play. A backup is noise until the man
-                    // ahead is out.
-                    const depth = describeDepth(depthChartContext(s.players, r.player.id));
-                    return `<tr${g.needed ? ' class="is-me"' : ""}>
-                    <td>${esc(r.player.name)}${injuryTag(r.player.injury)}
+                .map((r) => {
+                  // The projection says how good he is; the depth chart says
+                  // whether he will play. A backup is noise until the man
+                  // ahead is out.
+                  const depth = describeDepth(depthChartContext(s.players, r.player.id));
+                  const open = ui.expandedTarget === r.player.id;
+                  return `<tr${g.needed ? ' class="is-me"' : ""}>
+                    <td><button type="button" class="row-toggle" data-expand="${esc(
+                      r.player.id,
+                    )}" aria-expanded="${open}">
+                      <span class="caret${open ? " is-open" : ""}" aria-hidden="true">›</span>
+                      <span>${esc(r.player.name)}${injuryTag(r.player.injury)}
                       <span class="sub">${esc(r.player.team ?? "FA")}${
                         depth ? ` · <span class="good">${esc(depth)}</span>` : ""
-                      }</span></td>
+                      }</span></span></button></td>
                     <td>${r.proj == null ? '<span class="faint">—</span>' : esc(num(r.proj))}</td>
                     <td class="${r.por == null ? "faint" : toneClass(r.por)}">${
                       r.por == null ? "—" : esc(signed(r.por))
                     }</td>
                     <td class="faint">${r.trending ? r.trending.toLocaleString() : "—"}</td>
-                  </tr>`;
-                  },
-                )
+                  </tr>${open ? upgradeRow(s, r.player.id, g.pos) : ""}`;
+                })
                 .join("")}</tbody></table>`,
           )
           .join('<div style="height:12px"></div>'),
@@ -1172,7 +1243,7 @@ function renderWaivers(s: AppState): string {
 
 // --- dispatcher -------------------------------------------------------------
 
-export function renderView(tab: Tab, s: AppState): string {
+export function renderView(tab: Tab, s: AppState, ui: UiState = NO_UI): string {
   const body =
     tab === "now"
       ? renderNow(s)
@@ -1182,7 +1253,7 @@ export function renderView(tab: Tab, s: AppState): string {
           ? renderPerformance(s)
           : tab === "league"
             ? renderLeague(s)
-            : renderWaivers(s);
+            : renderWaivers(s, ui);
 
   return renderBanners(s) + body;
 }

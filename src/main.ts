@@ -21,6 +21,7 @@ import {
   renderSubtitle,
   renderView,
   type Tab,
+  type UiState,
 } from "./app/views.js";
 
 const TABS: Tab[] = ["now", "team", "performance", "league", "waivers"];
@@ -38,6 +39,8 @@ let state: AppState | null = null;
 let tab: Tab = readTab();
 let loading = false;
 let pollTimer: number | undefined;
+/** Expanded waiver comparison. Held here so a poll re-render does not close it. */
+let ui: UiState = { expandedTarget: null };
 
 function readTab(): Tab {
   const hash = location.hash.replace(/^#\/?/, "") as Tab;
@@ -59,7 +62,7 @@ function paintFreshness() {
 
 function paint() {
   if (!state) return;
-  view.innerHTML = renderView(tab, state);
+  view.innerHTML = renderView(tab, state, ui);
   subtitle.textContent = renderSubtitle(state);
   paintFreshness();
 
@@ -259,6 +262,15 @@ document.addEventListener("click", (event) => {
     return;
   }
 
+  const expander = target.closest<HTMLElement>("[data-expand]");
+  if (expander) {
+    const id = expander.dataset.expand!;
+    // Toggle: tapping the open row closes it.
+    ui = { expandedTarget: ui.expandedTarget === id ? null : id };
+    paint();
+    return;
+  }
+
   if (target.closest("[data-close-chart]")) {
     closeSheet();
     return;
@@ -302,6 +314,7 @@ for (const btn of document.querySelectorAll<HTMLButtonElement>(".tab")) {
     const next = btn.dataset.tab as Tab;
     if (!TABS.includes(next) || next === tab) return;
     tab = next;
+    ui = { expandedTarget: null };
     location.hash = `#/${next}`;
     paint();
     view.scrollIntoView({ block: "start" });
