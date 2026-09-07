@@ -6,6 +6,14 @@ name: Refresh league fixture
 
 on:
   workflow_dispatch:
+  push:
+    # Refresh whenever the fetch layer changes, so the fixture always matches
+    # the code that produced it. Ignoring fixtures/ keeps the job's own commit
+    # from re-triggering it.
+    paths:
+      - "src/lib/**"
+      - "scripts/dump.ts"
+      - ".github/workflows/refresh-fixture.yml"
   schedule:
     # Tuesday 13:00 UTC — after Monday night games and after waivers clear.
     - cron: "0 13 * * 2"
