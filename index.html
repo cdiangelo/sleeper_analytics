@@ -61,16 +61,39 @@
     -->
     <script>
       window.__ggBooted = false;
+
+      function __ggFail(headline, detail) {
+        var el = document.getElementById("view");
+        if (el) {
+          el.innerHTML =
+            '<div class="banner is-error"><h3>' + headline + "</h3><p>" + detail + "</p></div>";
+        }
+      }
+
+      // The build rewrites the module script below to a hashed asset, so a
+      // literal /src/main.ts in the live DOM is proof we are being served the
+      // repository source rather than the build. Report it immediately rather
+      // than waiting out the timeout.
+      document.addEventListener("DOMContentLoaded", function () {
+        if (window.__ggBooted) return;
+        if (!document.querySelector('script[src="/src/main.ts"]')) return;
+        __ggFail(
+          "This is the unbuilt source",
+          "GitHub Pages is serving the repository root instead of the compiled " +
+            "app, so the browser is being handed TypeScript it cannot run. Set " +
+            "<b>Settings &rarr; Pages &rarr; Source</b> to <b>GitHub Actions</b> " +
+            "(not &ldquo;Deploy from a branch&rdquo;), then re-run the deploy.",
+        );
+      });
+
+      // Fallback for any other reason the bundle never runs.
       setTimeout(function () {
         if (window.__ggBooted) return;
-        var el = document.getElementById("view");
-        if (!el) return;
-        el.innerHTML =
-          '<div class="banner is-error"><h3>The app didn\'t start</h3>' +
-          "<p>The page loaded but its code did not. This is usually the host " +
-          "serving the repository source instead of the built output — check " +
-          "that GitHub Pages is set to deploy from GitHub Actions rather than " +
-          "from a branch.</p></div>";
+        __ggFail(
+          "The app didn't start",
+          "The page loaded but its code did not. Check that GitHub Pages is " +
+            "deploying from GitHub Actions rather than from a branch.",
+        );
       }, 8000);
     </script>
     <script type="module" src="/src/main.ts"></script>
