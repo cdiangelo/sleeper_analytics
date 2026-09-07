@@ -119,3 +119,21 @@ describe("scoringBreakdown", () => {
     expect(rows.map((r) => r.stat)).toEqual(["rec_yd"]);
   });
 });
+
+describe("scoringEdge position coverage", () => {
+  it("has no meaning for kickers, whose stats half PPR does not score", () => {
+    // Without this guard a kicker's whole score reads as bonus scoring.
+    const stats = { fgm_30_39: 2, xpm: 3, fgm_40_49: 1 };
+    expect(scoringEdge(stats, EXPECTED_SCORING, "K")).toBeNull();
+    expect(scoringEdge(stats, EXPECTED_SCORING, "DEF")).toBeNull();
+  });
+
+  it("still scores skill positions", () => {
+    const stats = { rec: 4, rec_yd: 110, rec_40p: 1, bonus_rec_yd_100: 1 };
+    expect(scoringEdge(stats, EXPECTED_SCORING, "WR")).toBeCloseTo(3, 10);
+  });
+
+  it("computes an edge when no position is supplied", () => {
+    expect(scoringEdge({ rec_40p: 1 }, EXPECTED_SCORING)).toBeCloseTo(1, 10);
+  });
+});

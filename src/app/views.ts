@@ -305,7 +305,10 @@ function renderTeam(s: AppState): string {
   const rosterTable = `<table><thead><tr><th>Player</th><th>Proj</th><th>vs ½PPR</th></tr></thead><tbody>${rows
     .map((r) => {
       const stats = s.projections[r.id]?.stats;
-      const edge = stats && r.proj != null ? scoringEdge(stats, s.league.scoring_settings) : null;
+      const edge =
+        stats && r.proj != null
+          ? scoringEdge(stats, s.league.scoring_settings, r.player?.pos)
+          : null;
       return `<tr${r.starting ? ' class="is-me"' : ""}>
         <td>${posTag(r.player?.pos ?? null)} ${esc(r.player?.name ?? r.id)}${injuryTag(
           r.player?.injury ?? null,

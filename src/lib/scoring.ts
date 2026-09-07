@@ -78,10 +78,12 @@ export function verifyScoring(live: ScoringSettings): ScoringMismatch[] {
 }
 
 /**
- * How much this league's scoring diverges from generic half-PPR for a given
- * stat line. Positive means our league rewards this player more than the
- * default number implies — the big-play WR effect from the 40+ yard and
- * yardage bonuses (spec §4).
+ * Generic half-PPR, for measuring how far this league's scoring diverges.
+ *
+ * Deliberately covers only offensive skill stats. Kicking and defensive
+ * scoring have no "generic half PPR" equivalent to compare against, so an
+ * edge computed for a K or DEF would just be their whole score — see
+ * `EDGE_COMPARABLE`.
  */
 export const HALF_PPR_BASELINE: ScoringSettings = {
   rec: 0.5,
@@ -95,9 +97,22 @@ export const HALF_PPR_BASELINE: ScoringSettings = {
   fum_lost: -2,
 };
 
+/** Positions the half-PPR baseline actually scores. */
+export const EDGE_COMPARABLE = new Set(["QB", "RB", "WR", "TE"]);
+
+/**
+ * Points this league's scoring adds over generic half PPR for a stat line.
+ * Positive means the default number understates the player here — the
+ * big-play effect of our 40+ yard and yardage bonuses.
+ *
+ * Returns null for positions the baseline does not cover, where the
+ * difference would be the player's entire score rather than an edge.
+ */
 export function scoringEdge(
   stats: Record<string, number> | null | undefined,
   scoringSettings: ScoringSettings,
-): number {
+  position?: string | null,
+): number | null {
+  if (position != null && !EDGE_COMPARABLE.has(position)) return null;
   return leaguePoints(stats, scoringSettings) - leaguePoints(stats, HALF_PPR_BASELINE);
 }
