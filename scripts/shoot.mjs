@@ -12,7 +12,7 @@
  * --empty forces the zero-score preseason state regardless of the fixture.
  */
 
-import { readFileSync, mkdirSync } from "node:fs";
+import { readFileSync, mkdirSync, existsSync } from "node:fs";
 import path from "node:path";
 import { chromium } from "playwright";
 
@@ -141,11 +141,23 @@ await page.route("**/players.json", (route) =>
 
 /**
  * The real public/projections.json is produced by the CI dump, which needs
- * network access to Sleeper. Stand in for it here by spreading the fixture's
- * one week of projections across the season with per-week variation, so the
- * season lines can be checked. Synthetic, and never written to disk.
+ * network access to Sleeper. When it exists, serve it — the point is to check
+ * the real asset. Only stand in for it when it is missing, by spreading the
+ * fixture's one week across the season so the lines still have something to
+ * draw. Synthetic, and never written to disk.
  */
+const realProjections = existsSync("public/projections.json")
+  ? readFileSync("public/projections.json", "utf8")
+  : null;
+
 await page.route("**/projections.json", (route) => {
+  if (realProjections) {
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: realProjections,
+    });
+  }
   const scored = new Set(Object.keys(snap.league.scoring_settings));
   const rostered = new Set();
   for (const r of snap.rosters) for (const id of r.players ?? []) rostered.add(id);
