@@ -51,6 +51,12 @@ const OUT_DIR = path.resolve(process.cwd(), "fixtures");
  */
 const PUBLIC_DIR = path.resolve(process.cwd(), "public");
 
+/**
+ * Season projections cover rostered players plus everyone ranked inside this
+ * cutoff, so a mid-week waiver pickup already has a rest-of-season line.
+ */
+const PROJECTION_RANK_CUTOFF = 800;
+
 const warnings: string[] = [];
 
 /** Run a fetch, downgrade any failure to a warning plus a fallback value. */
@@ -138,12 +144,26 @@ async function main() {
    * Whole-season projections, shipped with the build.
    *
    * Fetching these from a phone is hopeless — a week is ~2MB and the season is
-   * ~34MB. But only rostered players are ever plotted, and only stat keys this
-   * league scores affect the math, so trimming on both axes leaves ~29KB a
-   * week. The runner pays the 34MB once a week so the client pays 0.5MB.
+   * ~34MB. But most of that is players nobody in this league will ever hold,
+   * and stat keys this league does not score, so trimming on both axes leaves
+   * well under a megabyte. The runner pays the 34MB so the client does not.
    */
   const rostered = new Set<string>();
   for (const roster of rosters) for (const id of roster.players ?? []) rostered.add(id);
+
+  /**
+   * Cover more than the current rosters. A player picked up on Tuesday would
+   * otherwise have no rest-of-season line until the next build — which is
+   * exactly the moment you want one. Including everyone inside the top 800
+   * covers any realistic waiver claim and still fits under a megabyte.
+   */
+  const projected = new Set(rostered);
+  for (const player of Object.values(players)) {
+    if (player.rank != null && player.rank <= PROJECTION_RANK_CUTOFF) {
+      projected.add(player.id);
+    }
+  }
+
   const scoredKeys = new Set(Object.keys(league.scoring_settings));
 
   const seasonProjections: Record<number, Record<string, Record<string, number>>> = {};
@@ -157,7 +177,7 @@ async function main() {
     );
 
     const trimmed: Record<string, Record<string, number>> = {};
-    for (const id of rostered) {
+    for (const id of projected) {
       const stats = rows[id]?.stats;
       if (!stats) continue;
       const slim: Record<string, number> = {};
@@ -173,7 +193,8 @@ async function main() {
     }
   }
   console.log(
-    `Season projections: ${projectionWeeks} weeks with stat lines, ${rostered.size} rostered players`,
+    `Season projections: ${projectionWeeks} weeks with stat lines, ` +
+      `${projected.size} players (${rostered.size} rostered plus top ${PROJECTION_RANK_CUTOFF})`,
   );
 
   const prevSeason = await soft(
