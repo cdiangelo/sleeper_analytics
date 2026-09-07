@@ -1,0 +1,51 @@
+name: Refresh league fixture
+
+# Sleeper's API is unreachable from some sandboxed dev environments, and the
+# fixture is what the UI and tests are built against. Actions runners have open
+# egress, so the snapshot is refreshed here rather than by hand.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Tuesday 13:00 UTC — after Monday night games and after waivers clear.
+    - cron: "0 13 * * 2"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-fixture-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Dump live league state
+        run: npm run dump
+
+      - name: Report fixture size
+        run: ls -lh fixtures/
+
+      - name: Commit fixture if changed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add fixtures/
+          if git diff --staged --quiet; then
+            echo "Fixture unchanged."
+          else
+            git commit -m "chore: refresh league fixture from live Sleeper API"
+            git push origin HEAD:${{ github.ref_name }}
+          fi

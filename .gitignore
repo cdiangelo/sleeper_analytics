@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.DS_Store
+*.local
+.vite/
+
+# The raw ~10MB player index is never committed; only the trimmed one is.
+fixtures/players-raw.json

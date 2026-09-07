@@ -1,0 +1,23 @@
+{
+  "name": "gridiron-gurus",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Analytics interface for the Gridiron Gurus Sleeper fantasy football league",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "dump": "tsx scripts/dump.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5",
+    "vitest": "^2.1.8"
+  }
+}
