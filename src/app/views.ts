@@ -20,6 +20,8 @@ import {
   type PositionLookup,
 } from "../lib/metrics.js";
 import { faabHistory, keeperOptions, freeAgents } from "../lib/normalize.js";
+import { depthChartContext, describeDepth } from "../lib/depth.js";
+import { describeChange } from "../lib/news.js";
 import { leaguePoints, scoringEdge } from "../lib/scoring.js";
 import type { Matchup } from "../lib/types.js";
 import {
@@ -349,7 +351,56 @@ function renderNow(s: AppState): string {
       )
     : "";
 
-  return summary + matchupCard + lineupCard + recent;
+  return summary + matchupCard + newsCard(s) + lineupCard + recent;
+}
+
+/**
+ * Availability changes since the last visit.
+ *
+ * Sleeper has no news feed, but a diff of the player index catches the part
+ * that changes decisions: who got ruled out and who was cleared. Yours first,
+ * because a ruling on your own starter is the only one you must act on.
+ */
+function newsCard(s: AppState): string {
+  if (s.statusChanges.length === 0) return "";
+
+  const mine = new Set(
+    s.rosters.find((r) => r.roster_id === myRosterId())?.players ?? [],
+  );
+  const rostered = rosteredPlayers(s);
+  const trending = new Set(s.trending.map((t) => t.player_id));
+
+  const relevant = s.statusChanges
+    .map((change) => ({
+      change,
+      player: s.players[change.playerId],
+      onMyTeam: mine.has(change.playerId),
+      available: !rostered.has(change.playerId),
+    }))
+    // Anyone else's bench player changing status is noise.
+    .filter((row) => row.player && (row.onMyTeam || trending.has(row.change.playerId)))
+    .sort((a, b) => Number(b.onMyTeam) - Number(a.onMyTeam) || b.change.at - a.change.at)
+    .slice(0, 8);
+
+  if (relevant.length === 0) return "";
+
+  return card(
+    "Status changes",
+    "From the player index, diffed since your last visit",
+    `<table><tbody>${relevant
+      .map(
+        (row) => `<tr${row.onMyTeam ? ' class="is-me"' : ""}>
+          <td>${posTag(row.player!.pos)} ${esc(row.player!.name)}
+            <span class="sub">${esc(row.player!.team ?? "FA")} · ${
+              row.onMyTeam ? "your roster" : row.available ? "free agent" : "rostered"
+            }</span></td>
+          <td class="status-cell ${row.change.improved ? "good" : "bad"}">${esc(
+            describeChange(row.change),
+          )}</td>
+        </tr>`,
+      )
+      .join("")}</tbody></table>`,
+  );
 }
 
 // --- Team -------------------------------------------------------------------
@@ -969,15 +1020,23 @@ function renderWaivers(s: AppState): string {
                 g.needed ? ' <span class="bad">need</span>' : ""
               }</th><th>Proj</th><th>POR</th><th>Adds</th></tr></thead><tbody>${g.rows
                 .map(
-                  (r) => `<tr${g.needed ? ' class="is-me"' : ""}>
+                  (r) => {
+                    // The projection says how good he is; the depth chart says
+                    // whether he will play. A backup is noise until the man
+                    // ahead is out.
+                    const depth = describeDepth(depthChartContext(s.players, r.player.id));
+                    return `<tr${g.needed ? ' class="is-me"' : ""}>
                     <td>${esc(r.player.name)}${injuryTag(r.player.injury)}
-                      <span class="sub">${esc(r.player.team ?? "FA")}</span></td>
+                      <span class="sub">${esc(r.player.team ?? "FA")}${
+                        depth ? ` · <span class="good">${esc(depth)}</span>` : ""
+                      }</span></td>
                     <td>${r.proj == null ? '<span class="faint">—</span>' : esc(num(r.proj))}</td>
                     <td class="${r.por == null ? "faint" : toneClass(r.por)}">${
                       r.por == null ? "—" : esc(signed(r.por))
                     }</td>
                     <td class="faint">${r.trending ? r.trending.toLocaleString() : "—"}</td>
-                  </tr>`,
+                  </tr>`;
+                  },
                 )
                 .join("")}</tbody></table>`,
           )

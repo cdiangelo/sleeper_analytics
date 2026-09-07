@@ -680,3 +680,11 @@ tbody tr.is-me td:first-child {
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
+
+/* Status text is a phrase, not a number — let it wrap rather than run into
+   the card edge on a narrow screen. */
+.status-cell {
+  white-space: normal;
+  max-width: 40%;
+  padding-left: 8px;
+}

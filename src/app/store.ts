@@ -31,6 +31,14 @@ import {
   type Reconciliation,
   type Team,
 } from "../lib/normalize.js";
+import {
+  diffInjuries,
+  injurySnapshot,
+  mergeChanges,
+  pruneChanges,
+  type InjurySnapshot,
+  type StatusChange,
+} from "../lib/news.js";
 import { verifyScoring, type ScoringMismatch } from "../lib/scoring.js";
 import {
   getDraftPicks,
@@ -77,6 +85,8 @@ export interface AppState {
    */
   projectionsByWeek: Record<number, Record<string, Projection>>;
   players: PlayerIndex;
+  /** Availability changes observed since the last visit, newest first. */
+  statusChanges: StatusChange[];
   /** True while the shipped index is in use and the live one is still loading. */
   playersProvisional: boolean;
   /** Last season's final standings, or null if the prior league is gone. */
@@ -308,6 +318,7 @@ export async function loadAll(opts: LoadOptions = {}): Promise<AppState> {
   const { players, provisional } = await loadPlayers(
     opts.onPlayerIndex ?? (() => {}),
   );
+  const statusChanges = await trackInjuries(players, provisional);
 
   const league = leagueHit.data;
   const rosters = rostersHit.data;
@@ -334,6 +345,7 @@ export async function loadAll(opts: LoadOptions = {}): Promise<AppState> {
       ...(Object.keys(projections).length > 0 ? { [week]: projections } : {}),
     },
     players,
+    statusChanges,
     playersProvisional: provisional,
     prevSeason,
     reconciliation,
@@ -376,6 +388,37 @@ export async function refreshLive(state: AppState): Promise<AppState> {
         : state.matchups,
     scoresFetchedAt: matchupsHit.fetchedAt,
   };
+}
+
+/**
+ * Diff the player index against what was stored last time and keep a rolling
+ * week of availability changes.
+ *
+ * Sleeper has no news API, but this catches most of what news would tell you:
+ * who got ruled out, and who was cleared. The snapshot advances on every load,
+ * while the observed changes persist for a week so a Tuesday ruling is still
+ * on screen come Sunday.
+ */
+async function trackInjuries(
+  index: PlayerIndex,
+  provisional: boolean,
+): Promise<StatusChange[]> {
+  const KEY = "news/injuries";
+
+  // The shipped index can be days old. Diffing against it would invent
+  // changes that already happened, so wait for the live one.
+  if (provisional) {
+    const hit = await readBlob<{ statuses: InjurySnapshot; changes: StatusChange[] }>(KEY);
+    return pruneChanges(hit?.data.changes ?? []);
+  }
+
+  const hit = await readBlob<{ statuses: InjurySnapshot; changes: StatusChange[] }>(KEY);
+  const previous = hit?.data.statuses ?? {};
+  const fresh = diffInjuries(previous, index);
+  const changes = pruneChanges(mergeChanges(hit?.data.changes ?? [], fresh));
+
+  await writeBlob(KEY, { statuses: injurySnapshot(index), changes });
+  return changes;
 }
 
 /** How many weeks ahead the on-demand projection load reaches. */
