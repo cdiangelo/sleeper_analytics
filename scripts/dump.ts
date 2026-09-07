@@ -39,6 +39,11 @@ import {
 import type { LeagueSnapshot, Matchup, Transaction } from "../src/lib/types.js";
 
 const OUT_DIR = path.resolve(process.cwd(), "fixtures");
+/**
+ * The trimmed index ships with the build so a cold load renders immediately
+ * instead of waiting on a 10MB download.
+ */
+const PUBLIC_DIR = path.resolve(process.cwd(), "public");
 
 const warnings: string[] = [];
 
@@ -139,13 +144,14 @@ async function main() {
   };
 
   await mkdir(OUT_DIR, { recursive: true });
+  await mkdir(PUBLIC_DIR, { recursive: true });
   await writeFile(
     path.join(OUT_DIR, "league-state.json"),
     JSON.stringify(snapshot, null, 2),
   );
-  await writeFile(path.join(OUT_DIR, "players.json"), JSON.stringify(players));
+  await writeFile(path.join(PUBLIC_DIR, "players.json"), JSON.stringify(players));
 
-  console.log(`\nWrote fixtures/league-state.json and fixtures/players.json`);
+  console.log(`\nWrote fixtures/league-state.json and public/players.json`);
 
   verify(snapshot, players);
 }

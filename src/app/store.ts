@@ -1,0 +1,270 @@
+/**
+ * Loads everything the screens need, through the cache layer.
+ *
+ * All Sleeper calls happen here, client-side, straight from the browser. There
+ * is no backend in this path: Sleeper is CORS-open and unauthenticated, so the
+ * hosted static site talks to it directly and scores are live.
+ */
+
+import {
+  cached,
+  cachedBlob,
+  describeAge,
+  readBlob,
+  TTL,
+  writeBlob,
+  type Staleness,
+} from "../lib/cache.js";
+import { FAAB_BUDGET, LEAGUE_ID, DRAFT_ID, ROSTER_ID } from "../lib/constants.js";
+import { startingSlots } from "../lib/metrics.js";
+import {
+  allRosteredPlayers,
+  buildTeams,
+  reconcileRosters,
+  reconstructRosters,
+  type Reconciliation,
+  type Team,
+} from "../lib/normalize.js";
+import { verifyScoring, type ScoringMismatch } from "../lib/scoring.js";
+import {
+  getDraftPicks,
+  getLeague,
+  getLeagueUsers,
+  getMatchups,
+  getNflState,
+  getProjections,
+  getRawPlayers,
+  getRosters,
+  getTransactions,
+  getTrendingAdds,
+  trimPlayerIndex,
+} from "../lib/sleeper.js";
+import type {
+  DraftPick,
+  League,
+  LeagueUser,
+  Matchup,
+  NflState,
+  PlayerIndex,
+  Projection,
+  Roster,
+  Transaction,
+  TrendingPlayer,
+} from "../lib/types.js";
+
+export interface AppState {
+  state: NflState;
+  league: League;
+  users: LeagueUser[];
+  rosters: Roster[];
+  teams: Team[];
+  slots: string[];
+  draftPicks: DraftPick[];
+  matchups: Record<number, Matchup[]>;
+  transactions: Transaction[];
+  trending: TrendingPlayer[];
+  projections: Record<string, Projection>;
+  players: PlayerIndex;
+  /** True while the shipped index is in use and the live one is still loading. */
+  playersProvisional: boolean;
+  reconciliation: Reconciliation;
+  scoringMismatches: ScoringMismatch[];
+  /** Age of the most time-sensitive thing on screen: the live scores. */
+  scoresFetchedAt: number;
+  errors: string[];
+}
+
+export function myRosterId(): number {
+  return ROSTER_ID;
+}
+
+export function staleness(state: AppState): Staleness {
+  return describeAge(state.scoresFetchedAt);
+}
+
+/**
+ * Player index, cheapest source first.
+ *
+ * The ~10MB live index is the source of truth, but it is a bad first
+ * impression. The build ships a pre-trimmed copy (~500KB) that renders
+ * immediately; the live one refreshes in the background and lands in
+ * IndexedDB for next time.
+ */
+async function loadPlayers(
+  onLiveIndex: (index: PlayerIndex) => void,
+): Promise<{ players: PlayerIndex; provisional: boolean }> {
+  const KEY = "players/nfl";
+
+  const hit = await readBlob<PlayerIndex>(KEY);
+  if (hit && Date.now() - hit.fetchedAt < TTL.players) {
+    return { players: hit.data, provisional: false };
+  }
+
+  // Refresh from Sleeper without blocking first paint.
+  const live = (async () => {
+    const index = trimPlayerIndex(await getRawPlayers());
+    await writeBlob(KEY, index);
+    return index;
+  })();
+
+  // Attach a handler now, synchronously. Every branch below awaits something
+  // first, and a rejection landing in that window would otherwise surface as
+  // an unhandled rejection even though the failure is recoverable.
+  live.catch(() => {});
+
+  if (hit) {
+    // Expired but usable: show it now, swap when the fresh one lands.
+    void live.then(onLiveIndex).catch(() => {});
+    return { players: hit.data, provisional: true };
+  }
+
+  // Cold start. Race the shipped asset against the live fetch.
+  try {
+    const res = await fetch(`${import.meta.env.BASE_URL}players.json`);
+    if (res.ok) {
+      const shipped = (await res.json()) as PlayerIndex;
+      void live.then(onLiveIndex).catch(() => {});
+      return { players: shipped, provisional: true };
+    }
+  } catch {
+    // Fall through to the live fetch.
+  }
+
+  return { players: await live, provisional: false };
+}
+
+export interface LoadOptions {
+  force?: boolean;
+  /** Called when the background player-index refresh completes. */
+  onPlayerIndex?: (index: PlayerIndex) => void;
+}
+
+export async function loadAll(opts: LoadOptions = {}): Promise<AppState> {
+  const { force = false } = opts;
+  const errors: string[] = [];
+
+  const soft = async <T>(label: string, fn: () => Promise<T>, fallback: T): Promise<T> => {
+    try {
+      return await fn();
+    } catch (err) {
+      errors.push(`${label}: ${err instanceof Error ? err.message : String(err)}`);
+      return fallback;
+    }
+  };
+
+  const stateHit = await cached("state", TTL.state, getNflState, { force });
+  const state = stateHit.data;
+  const week = Math.max(1, state.week);
+
+  const [leagueHit, usersHit, rostersHit] = await Promise.all([
+    cached("league", TTL.league, () => getLeague(LEAGUE_ID), { force }),
+    cached("users", TTL.users, () => getLeagueUsers(LEAGUE_ID), { force }),
+    cached("rosters", TTL.rosters, () => getRosters(LEAGUE_ID), { force }),
+  ]);
+
+  const draftPicks = await soft(
+    "draft",
+    async () =>
+      (await cached("draft/picks", TTL.draft, () => getDraftPicks(DRAFT_ID), { force }))
+        .data,
+    [] as DraftPick[],
+  );
+
+  // Past weeks are settled and cached for a day; the current week is the one
+  // that moves during games and gets the 60-second TTL.
+  const matchups: Record<number, Matchup[]> = {};
+  let scoresFetchedAt = Date.now();
+
+  for (let w = 1; w <= week; w++) {
+    const isCurrent = w === week;
+    const hit = await soft(
+      `matchups w${w}`,
+      () =>
+        cached(
+          `matchups/${w}`,
+          isCurrent ? TTL.matchupsLive : TTL.matchupsFinal,
+          () => getMatchups(LEAGUE_ID, w),
+          { force },
+        ),
+      null,
+    );
+    if (!hit) continue;
+    if (hit.data.length > 0) matchups[w] = hit.data;
+    if (isCurrent) scoresFetchedAt = hit.fetchedAt;
+  }
+
+  const transactions: Transaction[] = [];
+  for (let w = 1; w <= week; w++) {
+    const rows = await soft(
+      `transactions w${w}`,
+      async () =>
+        (
+          await cached(
+            `transactions/${w}`,
+            TTL.transactions,
+            () => getTransactions(LEAGUE_ID, w),
+            { force },
+          )
+        ).data,
+      [] as Transaction[],
+    );
+    transactions.push(...rows);
+  }
+
+  const trending = await soft(
+    "trending",
+    async () =>
+      (await cached("trending/add", TTL.trending, () => getTrendingAdds(24, 60), { force }))
+        .data,
+    [] as TrendingPlayer[],
+  );
+
+  const projections = await soft(
+    "projections",
+    async () =>
+      (
+        await cachedBlob(
+          `projections/${state.season}/${week}`,
+          TTL.projections,
+          () => getProjections(state.season, week),
+          { force },
+        )
+      ).data,
+    {} as Record<string, Projection>,
+  );
+
+  const { players, provisional } = await loadPlayers(
+    opts.onPlayerIndex ?? (() => {}),
+  );
+
+  const league = leagueHit.data;
+  const rosters = rostersHit.data;
+
+  const rebuilt = reconstructRosters(draftPicks, transactions);
+  const reconciliation = reconcileRosters(rebuilt, rosters);
+
+  return {
+    state,
+    league,
+    users: usersHit.data,
+    rosters,
+    teams: buildTeams(usersHit.data, rosters, league.settings.waiver_budget ?? FAAB_BUDGET),
+    slots: startingSlots(league.roster_positions),
+    draftPicks,
+    matchups,
+    transactions,
+    trending,
+    projections,
+    players,
+    playersProvisional: provisional,
+    reconciliation,
+    scoringMismatches: verifyScoring(league.scoring_settings),
+    scoresFetchedAt,
+    errors,
+  };
+}
+
+/** Every player currently on a roster, for the free-agent set. */
+export function rosteredPlayers(state: AppState): Set<string> {
+  return allRosteredPlayers(state.rosters);
+}

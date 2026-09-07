@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="description" content="Analytics for the Gridiron Gurus fantasy league" />
+    <meta name="theme-color" content="#0b0f14" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Gridiron" />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" href="icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="icon-180.png" />
+    <title>Gridiron Gurus</title>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar-row">
+        <h1 class="wordmark">Gridiron</h1>
+        <button id="refresh" class="refresh" type="button" aria-label="Refresh data">
+          <span class="refresh-dot" aria-hidden="true"></span>
+          <span id="freshness" class="freshness">loading</span>
+        </button>
+      </div>
+      <p id="subtitle" class="subtitle">Connecting to Sleeper…</p>
+    </header>
+
+    <main id="view" class="view" tabindex="-1">
+      <div class="skeleton" role="status" aria-live="polite">
+        <p>Loading league…</p>
+      </div>
+    </main>
+
+    <nav class="tabbar" aria-label="Sections">
+      <button type="button" data-tab="now" class="tab is-active">
+        <span class="tab-label">Now</span>
+      </button>
+      <button type="button" data-tab="team" class="tab">
+        <span class="tab-label">Team</span>
+      </button>
+      <button type="button" data-tab="performance" class="tab">
+        <span class="tab-label">Trends</span>
+      </button>
+      <button type="button" data-tab="league" class="tab">
+        <span class="tab-label">League</span>
+      </button>
+      <button type="button" data-tab="waivers" class="tab">
+        <span class="tab-label">Waivers</span>
+      </button>
+    </nav>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

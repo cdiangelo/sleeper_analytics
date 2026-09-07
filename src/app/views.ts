@@ -1,0 +1,859 @@
+/**
+ * Screens. Each renders to an HTML string from AppState and nothing else.
+ *
+ * Empty states are written first, not last: week 1 has no scores until
+ * kickoff, so every screen has to read well with nothing in it.
+ */
+
+import { FLEX_ELIGIBLE } from "../lib/constants.js";
+import {
+  allPlayStandings,
+  benchReports,
+  consistency,
+  mean,
+  opponentStrength,
+  optimalLineup,
+  playedWeeks,
+  positionalEdge,
+  trendSeries,
+  weekScores,
+  type PositionLookup,
+} from "../lib/metrics.js";
+import { faabHistory, keeperOptions, freeAgents } from "../lib/normalize.js";
+import { leaguePoints, scoringEdge } from "../lib/scoring.js";
+import type { Matchup } from "../lib/types.js";
+import { barCell, lineChart, sparkline } from "./charts.js";
+import {
+  esc,
+  injuryTag,
+  num,
+  ordinal,
+  pct,
+  posTag,
+  record,
+  signed,
+  signedPct,
+  toneClass,
+} from "./format.js";
+import { myRosterId, rosteredPlayers, type AppState } from "./store.js";
+
+export type Tab = "now" | "team" | "performance" | "league" | "waivers";
+
+// --- shared helpers ---------------------------------------------------------
+
+function posOf(s: AppState): PositionLookup {
+  return (id) => s.players[id]?.pos ?? null;
+}
+
+function playerName(s: AppState, id: string): string {
+  return s.players[id]?.name ?? id;
+}
+
+function teamName(s: AppState, rosterId: number | null | undefined): string {
+  if (rosterId == null) return "—";
+  return s.teams.find((t) => t.rosterId === rosterId)?.name ?? `Roster ${rosterId}`;
+}
+
+/**
+ * League-scored projection for a player. Returns null when projections have
+ * not published stat lines yet, so screens can say so instead of showing 0.0.
+ */
+function projected(s: AppState, playerId: string): number | null {
+  const stats = s.projections[playerId]?.stats;
+  if (!stats) return null;
+  const meaningful = Object.keys(stats).some(
+    (k) => k !== "adp_dd_ppr" && k !== "pos_adp_dd_ppr",
+  );
+  if (!meaningful) return null;
+  return leaguePoints(stats, s.league.scoring_settings);
+}
+
+function currentWeek(s: AppState): number {
+  return Math.max(1, s.state.week);
+}
+
+function myRow(s: AppState, week: number): Matchup | undefined {
+  return s.matchups[week]?.find((m) => m.roster_id === myRosterId());
+}
+
+function opponentRow(s: AppState, week: number): Matchup | undefined {
+  const mine = myRow(s, week);
+  if (!mine || mine.matchup_id == null) return undefined;
+  return s.matchups[week]?.find(
+    (m) => m.matchup_id === mine.matchup_id && m.roster_id !== mine.roster_id,
+  );
+}
+
+/** Sum of league-scored projections for a team's declared starters. */
+function projectedTotal(s: AppState, row: Matchup | undefined): number | null {
+  if (!row?.starters) return null;
+  let total = 0;
+  let found = 0;
+  for (const id of row.starters) {
+    if (!id || id === "0") continue;
+    const p = projected(s, id);
+    if (p != null) {
+      total += p;
+      found++;
+    }
+  }
+  return found === 0 ? null : total;
+}
+
+function card(title: string, hint: string, body: string): string {
+  if (!body) return "";
+  return (
+    `<section class="card"><h2>${esc(title)}</h2>` +
+    (hint ? `<p class="hint">${esc(hint)}</p>` : "") +
+    body +
+    `</section>`
+  );
+}
+
+function empty(headline: string, detail: string): string {
+  return `<div class="empty"><strong>${esc(headline)}</strong>${esc(detail)}</div>`;
+}
+
+function kickoffNote(s: AppState): string {
+  const start = new Date(s.state.season_start_date);
+  if (Number.isNaN(start.getTime())) return "Scores appear once games kick off.";
+  return `Week 1 kicks off ${start.toLocaleDateString(undefined, {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+  })}. Scores appear as games go final.`;
+}
+
+// --- banners ----------------------------------------------------------------
+
+export function renderBanners(s: AppState): string {
+  const out: string[] = [];
+
+  if (!s.reconciliation.agree) {
+    out.push(
+      `<div class="banner"><h3>Rosters and draft board disagree</h3><p>${esc(
+        s.reconciliation.summary,
+      )} Rosters shown here are rebuilt from the draft plus transactions.</p></div>`,
+    );
+  }
+
+  if (s.scoringMismatches.length > 0) {
+    const detail = s.scoringMismatches
+      .map((m) => `${m.key}: expected ${m.expected}, league has ${m.actual ?? "none"}`)
+      .join("; ");
+    out.push(
+      `<div class="banner is-error"><h3>League scoring has changed</h3><p>${esc(
+        detail,
+      )}. All points here use the live league settings.</p></div>`,
+    );
+  }
+
+  if (s.errors.length > 0) {
+    out.push(
+      `<div class="banner is-error"><h3>Some data didn't load</h3><p>${esc(
+        s.errors.join("; "),
+      )}. Showing the last cached copy where one exists.</p></div>`,
+    );
+  }
+
+  if (s.playersProvisional) {
+    out.push(
+      `<div class="banner"><h3>Building player index</h3><p>Using the shipped player list while the current one downloads. Injury statuses may be a few days old until it finishes.</p></div>`,
+    );
+  }
+
+  return out.join("");
+}
+
+// --- Now --------------------------------------------------------------------
+
+function renderNow(s: AppState): string {
+  const week = currentWeek(s);
+  const mine = myRow(s, week);
+  const opp = opponentRow(s, week);
+  const played = playedWeeks(s.matchups);
+  const live = (mine?.points ?? 0) > 0 || (opp?.points ?? 0) > 0;
+
+  const myProj = projectedTotal(s, mine);
+  const oppProj = projectedTotal(s, opp);
+
+  const scoreOf = (row: Matchup | undefined, proj: number | null) =>
+    live ? num(row?.points ?? 0) : proj != null ? num(proj) : "—";
+
+  const matchupCard = card(
+    `Week ${week}`,
+    live ? "Live scoring" : "Projected, scored under this league's settings",
+    `<div class="matchup">
+      <div class="matchup-team away">
+        <div class="matchup-name">${esc(teamName(s, myRosterId()))}</div>
+        <div class="matchup-score">${scoreOf(mine, myProj)}</div>
+      </div>
+      <div class="matchup-vs">vs</div>
+      <div class="matchup-team">
+        <div class="matchup-name">${esc(teamName(s, opp?.roster_id))}</div>
+        <div class="matchup-score">${scoreOf(opp, oppProj)}</div>
+      </div>
+    </div>` +
+      (!live && myProj != null && oppProj != null
+        ? `<p class="hint" style="margin:10px 0 0;text-align:center">${
+            myProj >= oppProj
+              ? `<span class="good">Favoured by ${esc(num(myProj - oppProj))}</span>`
+              : `<span class="bad">Underdog by ${esc(num(oppProj - myProj))}</span>`
+          }</p>`
+        : "") +
+      (!live && myProj == null
+        ? `<p class="hint" style="margin:10px 0 0;text-align:center">Projections haven't published for week ${week} yet.</p>`
+        : ""),
+  );
+
+  // Season summary only means something once games have been played.
+  const standings = allPlayStandings(s.matchups);
+  const me = standings.find((r) => r.rosterId === myRosterId());
+  const summary = me
+    ? `<div class="stats">
+        <div class="stat"><div class="stat-value">${esc(record(me.actual))}</div><div class="stat-label">Record</div></div>
+        <div class="stat"><div class="stat-value">${esc(record(me.allPlay))}</div><div class="stat-label">All-play</div></div>
+        <div class="stat"><div class="stat-value ${toneClass(me.luck)}">${esc(signedPct(me.luck))}</div><div class="stat-label">Luck</div></div>
+        <div class="stat"><div class="stat-value">${esc(num(me.pointsFor))}</div><div class="stat-label">Points for</div></div>
+      </div>`
+    : `<div class="card">${empty(
+        "The season hasn't started",
+        kickoffNote(s),
+      )}</div>`;
+
+  const starters = mine?.starters ?? [];
+  const startersPoints = mine?.starters_points ?? [];
+  const lineupRows = starters
+    .map((id, i) => {
+      const slot = s.slots[i] ?? "—";
+      if (!id || id === "0") {
+        return `<tr><td>${posTag(slot)} <span class="faint">empty</span></td><td class="faint">—</td></tr>`;
+      }
+      const player = s.players[id];
+      const proj = projected(s, id);
+      const value = live ? num(startersPoints[i] ?? 0) : proj != null ? num(proj) : "—";
+      return `<tr>
+        <td>${posTag(slot)} ${esc(playerName(s, id))}${injuryTag(player?.injury ?? null)}
+          <span class="sub">${esc(player?.pos ?? "")} ${esc(player?.team ?? "FA")}</span></td>
+        <td>${esc(value)}</td>
+      </tr>`;
+    })
+    .join("");
+
+  const lineupCard = lineupRows
+    ? card(
+        "Your lineup",
+        live ? "Points scored this week" : "League-scored projections",
+        `<table><thead><tr><th>Starter</th><th>${live ? "Pts" : "Proj"}</th></tr></thead><tbody>${lineupRows}</tbody></table>`,
+      )
+    : card("Your lineup", "", empty("No lineup set", "Sleeper hasn't returned starters for this week yet."));
+
+  // Once there is scoring history, the last few weeks are the fastest read.
+  const recent = played.length
+    ? card(
+        "Recent weeks",
+        "Your score against the league each week",
+        `<table><thead><tr><th>Wk</th><th>You</th><th>Opp</th><th>Avg</th><th></th></tr></thead><tbody>${trendSeries(
+          s.matchups,
+          myRosterId(),
+        )
+          .slice(-5)
+          .map((row) => {
+            const scores = weekScores(row.week, s.matchups[row.week] ?? []);
+            const meWeek = scores.find((x) => x.rosterId === myRosterId());
+            const won = meWeek?.won;
+            return `<tr>
+              <td>${row.week}</td>
+              <td>${esc(num(row.points))}</td>
+              <td>${esc(num(meWeek?.opponentPoints ?? 0))}</td>
+              <td class="faint">${esc(num(row.average))}</td>
+              <td class="${won === null ? "faint" : won ? "good" : "bad"}">${
+                won === null ? "—" : won ? "W" : meWeek?.tied ? "T" : "L"
+              }</td>
+            </tr>`;
+          })
+          .join("")}</tbody></table>`,
+      )
+    : "";
+
+  return summary + matchupCard + lineupCard + recent;
+}
+
+// --- Team -------------------------------------------------------------------
+
+function renderTeam(s: AppState): string {
+  const mine = s.rosters.find((r) => r.roster_id === myRosterId());
+  const roster = mine?.players ?? [];
+  if (roster.length === 0) {
+    return card("Your roster", "", empty("No roster yet", "Sleeper hasn't returned your players."));
+  }
+
+  const rows = [...roster]
+    .map((id) => ({
+      id,
+      player: s.players[id],
+      proj: projected(s, id),
+      starting: mine?.starters?.includes(id) ?? false,
+    }))
+    .sort((a, b) => {
+      if (a.starting !== b.starting) return a.starting ? -1 : 1;
+      return (b.proj ?? -1) - (a.proj ?? -1);
+    });
+
+  const anyProjection = rows.some((r) => r.proj != null);
+
+  const rosterTable = `<table><thead><tr><th>Player</th><th>Proj</th><th>vs ½PPR</th></tr></thead><tbody>${rows
+    .map((r) => {
+      const stats = s.projections[r.id]?.stats;
+      const edge = stats && r.proj != null ? scoringEdge(stats, s.league.scoring_settings) : null;
+      return `<tr${r.starting ? ' class="is-me"' : ""}>
+        <td>${posTag(r.player?.pos ?? null)} ${esc(r.player?.name ?? r.id)}${injuryTag(
+          r.player?.injury ?? null,
+        )}<span class="sub">${esc(r.player?.team ?? "FA")}${r.starting ? " · starting" : " · bench"}</span></td>
+        <td>${r.proj == null ? '<span class="faint">—</span>' : esc(num(r.proj))}</td>
+        <td class="${edge == null ? "faint" : toneClass(edge)}">${
+          edge == null ? "—" : esc(signed(edge))
+        }</td>
+      </tr>`;
+    })
+    .join("")}</tbody></table>`;
+
+  const projectionNote = anyProjection
+    ? "Projections recomputed under this league's scoring. The third column is what our 40+ yard and yardage bonuses add over generic half PPR."
+    : "Projections haven't published stat lines for this week yet.";
+
+  // Optimal-lineup preview against projections, before the week is played.
+  const projPoints: Record<string, number> = {};
+  for (const r of rows) if (r.proj != null) projPoints[r.id] = r.proj;
+  const best = anyProjection ? optimalLineup(projPoints, posOf(s), s.slots) : null;
+  const declared = mine?.starters ?? [];
+  const declaredProj = declared.reduce(
+    (sum, id) => sum + (id && id !== "0" ? (projected(s, id) ?? 0) : 0),
+    0,
+  );
+
+  const lineupAdvice =
+    best && best.points - declaredProj > 0.05
+      ? card(
+          "Lineup check",
+          "Best legal lineup from your roster, on projections",
+          `<div class="stats">
+            <div class="stat"><div class="stat-value">${esc(num(declaredProj))}</div><div class="stat-label">Current</div></div>
+            <div class="stat"><div class="stat-value">${esc(num(best.points))}</div><div class="stat-label">Optimal</div></div>
+            <div class="stat"><div class="stat-value good">${esc(signed(best.points - declaredProj))}</div><div class="stat-label">Available</div></div>
+          </div>
+          <table><thead><tr><th>Slot</th><th>Start</th><th>Proj</th></tr></thead><tbody>${best.lineup
+            .map(
+              (slot) => `<tr${
+                slot.playerId && !declared.includes(slot.playerId) ? ' class="is-me"' : ""
+              }>
+                <td>${posTag(slot.slot)}</td>
+                <td>${slot.playerId ? esc(playerName(s, slot.playerId)) : '<span class="faint">—</span>'}</td>
+                <td>${esc(num(slot.points))}</td>
+              </tr>`,
+            )
+            .join("")}</tbody></table>`,
+        )
+      : "";
+
+  const keepers = keeperOptions(myRosterId(), roster, s.draftPicks, s.players);
+  const keeperCard = keepers.length
+    ? card(
+        "Keeper costs for next season",
+        "Draft round minus two, escalating annually. Max one keeper.",
+        `<table><thead><tr><th>Player</th><th>2026</th><th>2027 cost</th></tr></thead><tbody>${keepers
+          .slice(0, 12)
+          .map(
+            (k) => `<tr>
+              <td>${posTag(k.position)} ${esc(k.name)}${
+                k.wasKeeper ? '<span class="sub">kept this year</span>' : ""
+              }</td>
+              <td class="faint">${k.draftedRound ? `R${k.draftedRound}` : "waiver"}</td>
+              <td>R${k.nextYearRound}</td>
+            </tr>`,
+          )
+          .join("")}</tbody></table>`,
+      )
+    : "";
+
+  return (
+    lineupAdvice +
+    card("Your roster", projectionNote, rosterTable) +
+    keeperCard
+  );
+}
+
+// --- Performance ------------------------------------------------------------
+
+function renderPerformance(s: AppState): string {
+  const played = playedWeeks(s.matchups);
+  if (played.length === 0) {
+    return card(
+      "Performance",
+      "",
+      empty("Your trend line starts after week 1", kickoffNote(s)),
+    );
+  }
+
+  const series = trendSeries(s.matchups, myRosterId());
+  const standings = allPlayStandings(s.matchups);
+  const me = standings.find((r) => r.rosterId === myRosterId());
+
+  const trend = card(
+    "Score, league average, week high",
+    "Where you landed each week against the field",
+    lineChart(
+      series.map((p) => `W${p.week}`),
+      [
+        { label: "You", color: "var(--accent)", values: series.map((p) => p.points) },
+        {
+          label: "League avg",
+          color: "var(--ink-faint)",
+          values: series.map((p) => p.average),
+          dashed: true,
+        },
+        {
+          label: "Week high",
+          color: "var(--good)",
+          values: series.map((p) => p.high),
+          dashed: true,
+        },
+      ],
+      { yLabel: "Weekly scores" },
+    ),
+  );
+
+  const allPlay = me
+    ? card(
+        "All-play record",
+        "Your score against every team, every week — 9 games a week instead of 1",
+        `<div class="stats">
+          <div class="stat">
+            <div class="stat-value">${esc(record(me.allPlay))}</div>
+            <div class="stat-label">All-play</div>
+            <div class="stat-note">${esc(pct(me.allPlayPct))} win rate</div>
+          </div>
+          <div class="stat">
+            <div class="stat-value">${esc(record(me.actual))}</div>
+            <div class="stat-label">Actual</div>
+            <div class="stat-note">${esc(pct(me.actualPct))} win rate</div>
+          </div>
+          <div class="stat">
+            <div class="stat-value ${toneClass(me.luck)}">${esc(signedPct(me.luck))}</div>
+            <div class="stat-label">Luck</div>
+            <div class="stat-note">${
+              me.luck > 0.05
+                ? "schedule has helped"
+                : me.luck < -0.05
+                  ? "schedule has cost you"
+                  : "record matches scoring"
+            }</div>
+          </div>
+        </div>`,
+      )
+    : "";
+
+  const bench = benchReports(s.matchups, myRosterId(), posOf(s), s.slots);
+  const totalLeft = bench.reduce((sum, b) => sum + b.left, 0);
+  const benchCard = bench.length
+    ? card(
+        "Points left on the bench",
+        "Your lineup against the best one your roster allowed",
+        `<div class="stats">
+          <div class="stat"><div class="stat-value">${esc(num(totalLeft))}</div><div class="stat-label">Season total</div></div>
+          <div class="stat"><div class="stat-value">${esc(num(totalLeft / bench.length))}</div><div class="stat-label">Per week</div></div>
+        </div>
+        <table><thead><tr><th>Wk</th><th>Started</th><th>Optimal</th><th>Left</th></tr></thead><tbody>${bench
+          .map(
+            (b) => `<tr>
+              <td>${b.week}</td>
+              <td>${esc(num(b.actual))}</td>
+              <td class="faint">${esc(num(b.optimal))}</td>
+              <td class="${b.left > 0.05 ? "bad" : "dim"}">${esc(num(b.left))}</td>
+            </tr>`,
+          )
+          .join("")}</tbody></table>`,
+      )
+    : "";
+
+  const edges = positionalEdge(s.matchups, myRosterId(), posOf(s));
+  const maxEdge = Math.max(...edges.map((e) => Math.max(e.mine, e.leagueAverage)), 1);
+  const positional = edges.length
+    ? card(
+        "Where your points come from",
+        "Per week by position, against the league average at that position",
+        `<table><thead><tr><th>Pos</th><th>You</th><th>League</th><th>Edge</th><th></th></tr></thead><tbody>${edges
+          .map(
+            (e) => `<tr>
+              <td>${posTag(e.position)}</td>
+              <td>${esc(num(e.mine))}</td>
+              <td class="faint">${esc(num(e.leagueAverage))}</td>
+              <td class="${toneClass(e.edge)}">${esc(signed(e.edge))}</td>
+              <td style="width:52px">${barCell(e.mine, maxEdge, e.edge < 0)}</td>
+            </tr>`,
+          )
+          .join("")}</tbody></table>`,
+      )
+    : "";
+
+  const myScores = series.map((p) => p.points);
+  const c = consistency(myScores);
+  const consistencyCard = card(
+    "Consistency",
+    "Floor and ceiling are the 20th and 80th percentiles of your weekly scores",
+    `<div class="stats">
+      <div class="stat"><div class="stat-value">${esc(num(c.mean))}</div><div class="stat-label">Average</div></div>
+      <div class="stat"><div class="stat-value">${esc(num(c.stdev))}</div><div class="stat-label">Std dev</div></div>
+      <div class="stat"><div class="stat-value">${esc(num(c.floor))}</div><div class="stat-label">Floor</div></div>
+      <div class="stat"><div class="stat-value">${esc(num(c.ceiling))}</div><div class="stat-label">Ceiling</div></div>
+    </div>
+    <p class="hint" style="margin:10px 0 0">${
+      myScores.length < 3
+        ? "Spread needs a few more weeks to mean much."
+        : c.stdev > 25
+          ? "High variance — big ceilings, but the floor loses winnable weeks."
+          : "Steady week to week."
+    }</p>`,
+  );
+
+  const strength = opponentStrength(s.matchups, myRosterId());
+  const avgRank = mean(strength.map((o) => o.rankLeagueWide).filter((r) => r > 0));
+  const scheduleCard = card(
+    "Schedule strength",
+    "Where each opponent's score ranked league-wide that week",
+    `<p class="hint" style="margin:0 0 8px">Average opponent finished ${esc(
+      ordinal(Math.round(avgRank)),
+    )} of ${s.teams.length} in the week you played them.</p>
+    <table><thead><tr><th>Wk</th><th>Opponent</th><th>Scored</th><th>Rank</th></tr></thead><tbody>${strength
+      .map(
+        (o) => `<tr>
+          <td>${o.week}</td>
+          <td>${esc(teamName(s, o.opponentRosterId))}</td>
+          <td>${esc(num(o.opponentPoints))}</td>
+          <td class="${o.rankLeagueWide <= 3 ? "bad" : o.rankLeagueWide >= 8 ? "good" : "dim"}">${esc(
+            ordinal(o.rankLeagueWide),
+          )}</td>
+        </tr>`,
+      )
+      .join("")}</tbody></table>`,
+  );
+
+  return trend + allPlay + benchCard + positional + consistencyCard + scheduleCard;
+}
+
+// --- League -----------------------------------------------------------------
+
+function renderLeague(s: AppState): string {
+  const played = playedWeeks(s.matchups);
+  const standings = allPlayStandings(s.matchups);
+
+  const table = played.length
+    ? `<div class="scroll-x"><table><thead><tr><th>Team</th><th>Rec</th><th>All-play</th><th>Luck</th><th>PF</th></tr></thead><tbody>${standings
+        .map(
+          (r) => `<tr${r.rosterId === myRosterId() ? ' class="is-me"' : ""}>
+            <td>${esc(teamName(s, r.rosterId))}</td>
+            <td>${esc(record(r.actual))}</td>
+            <td>${esc(record(r.allPlay))}<span class="sub">${esc(pct(r.allPlayPct))}</span></td>
+            <td class="${toneClass(r.luck)}">${esc(signedPct(r.luck))}</td>
+            <td>${esc(num(r.pointsFor))}</td>
+          </tr>`,
+        )
+        .join("")}</tbody></table></div>`
+    : `<table><thead><tr><th>Team</th><th>Owner</th><th>FAAB</th></tr></thead><tbody>${s.teams
+        .map(
+          (t) => `<tr${t.rosterId === myRosterId() ? ' class="is-me"' : ""}>
+            <td>${esc(t.name)}</td>
+            <td class="faint">${esc(t.owner)}</td>
+            <td>$${t.faabRemaining}</td>
+          </tr>`,
+        )
+        .join("")}</tbody></table>`;
+
+  const standingsCard = card(
+    played.length ? "Standings" : "League",
+    played.length
+      ? "All-play is the honest ranking; luck is the gap between it and your record"
+      : "Ten teams, half PPR, one keeper each",
+    table,
+  );
+
+  const faab = card(
+    "FAAB remaining",
+    "Who can still outbid you, and who is broke",
+    `<table><thead><tr><th>Team</th><th>Spent</th><th>Left</th><th></th></tr></thead><tbody>${[...s.teams]
+      .sort((a, b) => b.faabRemaining - a.faabRemaining)
+      .map(
+        (t) => `<tr${t.rosterId === myRosterId() ? ' class="is-me"' : ""}>
+          <td>${esc(t.name)}</td>
+          <td class="faint">$${t.faabUsed}</td>
+          <td>$${t.faabRemaining}</td>
+          <td style="width:52px">${barCell(t.faabRemaining, 100)}</td>
+        </tr>`,
+      )
+      .join("")}</tbody></table>`,
+  );
+
+  const spend = faabHistory(s.transactions).slice(0, 12);
+  const spendCard = spend.length
+    ? card(
+        "Recent waiver claims",
+        "What things have actually cost in this league",
+        `<table><thead><tr><th>Player</th><th>Team</th><th>Bid</th></tr></thead><tbody>${spend
+          .map(
+            (f) => `<tr>
+              <td>${esc(playerName(s, f.playerId))}</td>
+              <td class="faint">${esc(teamName(s, f.rosterId))}</td>
+              <td>$${f.bid}</td>
+            </tr>`,
+          )
+          .join("")}</tbody></table>`,
+      )
+    : card(
+        "Recent waiver claims",
+        "",
+        empty("No claims yet", "FAAB spending appears here once waivers start running."),
+      );
+
+  return standingsCard + faab + spendCard;
+}
+
+// --- Waivers ----------------------------------------------------------------
+
+function renderWaivers(s: AppState): string {
+  const taken = rosteredPlayers(s);
+  const available = freeAgents(s.players, taken);
+  const trendingCount = new Map(s.trending.map((t) => [t.player_id, t.count]));
+
+  /**
+   * Points over replacement: a player's league-scored projection minus the
+   * median projection of rostered starters at the same position. This is what
+   * makes the ranking specific to this league rather than generic.
+   */
+  const startersByPos = new Map<string, number[]>();
+  for (const roster of s.rosters) {
+    for (const id of roster.starters ?? []) {
+      if (!id || id === "0") continue;
+      const pos = s.players[id]?.pos;
+      const p = projected(s, id);
+      if (!pos || p == null) continue;
+      const list = startersByPos.get(pos) ?? [];
+      list.push(p);
+      startersByPos.set(pos, list);
+    }
+  }
+  const replacement = new Map<string, number>();
+  for (const [pos, values] of startersByPos) {
+    const sorted = [...values].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    replacement.set(
+      pos,
+      sorted.length % 2 === 0
+        ? ((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2
+        : (sorted[mid] ?? 0),
+    );
+  }
+
+  const ranked = available
+    .map((p) => {
+      const proj = projected(s, p.id);
+      const repl = replacement.get(p.pos);
+      return {
+        player: p,
+        proj,
+        por: proj != null && repl != null ? proj - repl : null,
+        trending: trendingCount.get(p.id) ?? 0,
+      };
+    })
+    .filter((r) => r.proj != null || r.trending > 0)
+    .sort((a, b) => (b.por ?? -999) - (a.por ?? -999) || b.trending - a.trending);
+
+  // Roster need, from the performance module — a WR4 upgrade is noise if the
+  // TE slot is what's costing games.
+  const edges = positionalEdge(s.matchups, myRosterId(), posOf(s));
+  const weakest = edges.filter((e) => e.edge < 0).slice(-2).map((e) => e.position);
+
+  const mine = s.teams.find((t) => t.rosterId === myRosterId());
+  const myRoster = s.rosters.find((r) => r.roster_id === myRosterId());
+
+  /**
+   * A starting slot with nobody eligible to fill it outranks any upgrade. In a
+   * 10-team league this is usually a bye week or a dropped defense.
+   */
+  const held = new Set(myRoster?.players ?? []);
+  const heldPositions = new Map<string, number>();
+  for (const id of held) {
+    const pos = s.players[id]?.pos;
+    if (pos) heldPositions.set(pos, (heldPositions.get(pos) ?? 0) + 1);
+  }
+  const holes = [...new Set(s.slots)]
+    .filter((slot) => slot !== "FLEX")
+    .filter((slot) => {
+      const need = s.slots.filter((x) => x === slot).length;
+      return (heldPositions.get(slot) ?? 0) < need;
+    });
+
+  const holesCard = holes.length
+    ? card(
+        "Unfilled starting slots",
+        "You cannot field a legal lineup without these",
+        `<table><tbody>${holes
+          .map((slot) => {
+            const best = ranked.filter((r) => r.player.pos === slot).slice(0, 2);
+            return `<tr>
+              <td>${posTag(slot)} <span class="bad">no ${esc(slot)} rostered</span>
+                <span class="sub">best available: ${
+                  best.length
+                    ? best.map((b) => `${esc(b.player.name)} (${esc(num(b.proj ?? 0))})`).join(", ")
+                    : "none projected"
+                }</span></td>
+            </tr>`;
+          })
+          .join("")}</tbody></table>`,
+      )
+    : "";
+
+  /**
+   * Points over replacement is only comparable within a position: a kicker
+   * clearing his replacement by a point is not worth what a receiver clearing
+   * his by a point is. So targets are grouped by position rather than thrown
+   * into one ranking, and the streaming positions are kept separate.
+   */
+  const SKILL = ["QB", "RB", "WR", "TE"];
+  const skillGroups = SKILL.map((pos) => ({
+    pos,
+    rows: ranked.filter((r) => r.player.pos === pos).slice(0, 4),
+    needed: weakest.includes(pos) || holes.includes(pos),
+  })).filter((g) => g.rows.length > 0);
+
+  const needNote = weakest.length
+    ? `Your weakest slots so far: ${weakest.join(" and ")}. Upgrades there are worth more than raw value elsewhere.`
+    : "Points over replacement is measured against the median rostered starter at each position, under this league's scoring.";
+
+  const targets = skillGroups.length
+    ? card(
+        "Best available",
+        needNote,
+        skillGroups
+          .map(
+            (g) =>
+              `<table><thead><tr><th>${esc(g.pos)}${
+                g.needed ? ' <span class="bad">need</span>' : ""
+              }</th><th>Proj</th><th>POR</th><th>Adds</th></tr></thead><tbody>${g.rows
+                .map(
+                  (r) => `<tr${g.needed ? ' class="is-me"' : ""}>
+                    <td>${esc(r.player.name)}${injuryTag(r.player.injury)}
+                      <span class="sub">${esc(r.player.team ?? "FA")}</span></td>
+                    <td>${r.proj == null ? '<span class="faint">—</span>' : esc(num(r.proj))}</td>
+                    <td class="${r.por == null ? "faint" : toneClass(r.por)}">${
+                      r.por == null ? "—" : esc(signed(r.por))
+                    }</td>
+                    <td class="faint">${r.trending ? r.trending.toLocaleString() : "—"}</td>
+                  </tr>`,
+                )
+                .join("")}</tbody></table>`,
+          )
+          .join('<div style="height:12px"></div>'),
+      )
+    : card(
+        "Best available",
+        "",
+        empty(
+          "Nothing to rank yet",
+          "Targets appear once projections publish for the week.",
+        ),
+      );
+
+  const streamers = ranked
+    .filter((r) => r.player.pos === "K" || r.player.pos === "DEF")
+    .slice(0, 6);
+  const streamerCard = streamers.length
+    ? card(
+        "Streaming K and DEF",
+        "Matchup plays, not roster upgrades — kept apart because a point over replacement here isn't worth one at receiver",
+        `<table><thead><tr><th>Player</th><th>Proj</th><th>Adds</th></tr></thead><tbody>${streamers
+          .map(
+            (r) => `<tr>
+              <td>${posTag(r.player.pos)} ${esc(r.player.name)}
+                <span class="sub">${esc(r.player.team ?? "FA")}</span></td>
+              <td>${esc(num(r.proj ?? 0))}</td>
+              <td class="faint">${r.trending ? r.trending.toLocaleString() : "—"}</td>
+            </tr>`,
+          )
+          .join("")}</tbody></table>`,
+      )
+    : "";
+
+  const trendingRows = s.trending
+    .slice(0, 15)
+    .map((t) => ({ p: s.players[t.player_id], count: t.count, taken: taken.has(t.player_id) }))
+    .filter((r) => r.p);
+
+  const trendingCard = trendingRows.length
+    ? card(
+        "Trending adds",
+        "Site-wide over the last 24 hours — a proxy for news breaking",
+        `<table><thead><tr><th>Player</th><th>Adds</th><th></th></tr></thead><tbody>${trendingRows
+          .map(
+            (r) => `<tr>
+              <td>${posTag(r.p!.pos)} ${esc(r.p!.name)}${injuryTag(r.p!.injury)}
+                <span class="sub">${esc(r.p!.team ?? "FA")}</span></td>
+              <td>${r.count.toLocaleString()}</td>
+              <td class="${r.taken ? "faint" : "good"}">${r.taken ? "rostered" : "free"}</td>
+            </tr>`,
+          )
+          .join("")}</tbody></table>`,
+      )
+    : "";
+
+  const budget = mine
+    ? card(
+        "Your budget",
+        "FAAB clears Tuesday, two-day process",
+        `<div class="stats">
+          <div class="stat"><div class="stat-value">$${mine.faabRemaining}</div><div class="stat-label">Remaining</div></div>
+          <div class="stat"><div class="stat-value">$${mine.faabUsed}</div><div class="stat-label">Spent</div></div>
+          <div class="stat"><div class="stat-value">${
+            s.teams.filter((t) => t.faabRemaining > mine.faabRemaining).length + 1
+          }</div><div class="stat-label">Rank</div></div>
+        </div>`,
+      )
+    : "";
+
+  return budget + holesCard + targets + streamerCard + trendingCard;
+}
+
+// --- dispatcher -------------------------------------------------------------
+
+export function renderView(tab: Tab, s: AppState): string {
+  const body =
+    tab === "now"
+      ? renderNow(s)
+      : tab === "team"
+        ? renderTeam(s)
+        : tab === "performance"
+          ? renderPerformance(s)
+          : tab === "league"
+            ? renderLeague(s)
+            : renderWaivers(s);
+
+  return renderBanners(s) + body;
+}
+
+export function renderSubtitle(s: AppState): string {
+  const played = playedWeeks(s.matchups);
+  const week = currentWeek(s);
+  const scope =
+    played.length === 0
+      ? `Week ${week} · preseason`
+      : `Week ${week} · ${played.length} played`;
+  return `${s.league.name} · ${scope}`;
+}
+
+/** Exposed for the sparkline in the header on wider screens. */
+export function seasonSparkline(s: AppState): string {
+  const series = trendSeries(s.matchups, myRosterId()).map((p) => p.points);
+  return series.length > 1 ? sparkline(series) : "";
+}
+
+/** Flex-eligible positions, re-exported so views elsewhere stay consistent. */
+export const FLEX = FLEX_ELIGIBLE;

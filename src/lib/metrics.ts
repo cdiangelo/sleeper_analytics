@@ -10,6 +10,18 @@ import type { Matchup } from "./types.js";
 /** Resolves a player_id to its position. Backed by the player index. */
 export type PositionLookup = (playerId: string) => string | null;
 
+/** Bench-like slots never enter the optimal lineup. */
+const NON_STARTING = new Set(["BN", "IR", "TAXI"]);
+
+/**
+ * The starting slots, read from the league's own `roster_positions` rather
+ * than assumed. This league runs 7 BN and no IR, but that is a setting and
+ * settings change.
+ */
+export function startingSlots(rosterPositions: string[]): string[] {
+  return rosterPositions.filter((slot) => !NON_STARTING.has(slot));
+}
+
 // --- week selection ---------------------------------------------------------
 
 /**

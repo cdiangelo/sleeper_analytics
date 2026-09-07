@@ -6,3 +6,4 @@ dist/
 
 # The raw ~10MB player index is never committed; only the trimmed one is.
 fixtures/players-raw.json
+screenshots/

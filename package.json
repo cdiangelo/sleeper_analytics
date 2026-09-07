@@ -11,10 +11,12 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "dump": "tsx scripts/dump.ts"
+    "dump": "tsx scripts/dump.ts",
+    "icons": "node scripts/make-icons.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.4.1",
+    "playwright": "^1.63.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vite": "^6.0.5",
