@@ -33,7 +33,12 @@ export const TTL = {
   state: 5 * 60_000,
   league: 24 * 60 * 60_000,
   users: 24 * 60 * 60_000,
-  rosters: 60 * 60_000,
+  /**
+   * Short, because this is the endpoint a manager edits. Lineup changes and
+   * adds land here, and an hour of staleness on your own start/sit decision
+   * reads as the app being broken.
+   */
+  rosters: 5 * 60_000,
   /** During games this is the one that matters. */
   matchupsLive: 60_000,
   matchupsFinal: 24 * 60 * 60_000,

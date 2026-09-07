@@ -91,6 +91,34 @@ function currentWeek(s: AppState): number {
   return Math.max(1, s.state.week);
 }
 
+/**
+ * Who a team is actually starting this week.
+ *
+ * Two endpoints answer this and they refresh at very different rates:
+ * `/matchups` carries the week's lineup and is refetched every 60 seconds,
+ * while `/rosters` is hourly. A start/sit change made in Sleeper therefore
+ * shows up in the matchup rows almost immediately and in the roster rows much
+ * later, so the matchup row wins wherever it exists. Nothing here needs a
+ * redeploy — both come live from Sleeper in the browser.
+ */
+export function startersFor(s: AppState, rosterId: number): Set<string> {
+  const week = currentWeek(s);
+  const fromMatchup = s.matchups[week]?.find((m) => m.roster_id === rosterId)?.starters;
+  if (fromMatchup && fromMatchup.length > 0) {
+    return new Set(fromMatchup.filter((id) => id && id !== "0"));
+  }
+  const fromRoster = s.rosters.find((r) => r.roster_id === rosterId)?.starters;
+  return new Set((fromRoster ?? []).filter((id) => id && id !== "0"));
+}
+
+/** The starting lineup in slot order, for rendering against roster_positions. */
+function startingLineup(s: AppState, rosterId: number): string[] {
+  const week = currentWeek(s);
+  const fromMatchup = s.matchups[week]?.find((m) => m.roster_id === rosterId)?.starters;
+  if (fromMatchup && fromMatchup.length > 0) return fromMatchup;
+  return s.rosters.find((r) => r.roster_id === rosterId)?.starters ?? [];
+}
+
 /** League-scored projection for a specific week, or null if none is loaded. */
 function projectedForWeek(s: AppState, week: number, playerId: string): number | null {
   const stats = s.projectionsByWeek[week]?.[playerId]?.stats;
@@ -108,7 +136,7 @@ function projectedForWeek(s: AppState, week: number, playerId: string): number |
  */
 export function rosterSeries(s: AppState): PlayerSeries[] {
   const mine = s.rosters.find((r) => r.roster_id === myRosterId());
-  const starters = new Set(mine?.starters ?? []);
+  const starters = startersFor(s, myRosterId());
 
   return (mine?.players ?? []).map((id) =>
     playerSeries(id, s.matchups, (week, playerId) => projectedForWeek(s, week, playerId), {
@@ -333,12 +361,14 @@ function renderTeam(s: AppState): string {
     return card("Your roster", "", empty("No roster yet", "Sleeper hasn't returned your players."));
   }
 
+  const startingSet = startersFor(s, myRosterId());
+
   const rows = [...roster]
     .map((id) => ({
       id,
       player: s.players[id],
       proj: projected(s, id),
-      starting: mine?.starters?.includes(id) ?? false,
+      starting: startingSet.has(id),
     }))
     .sort((a, b) => {
       if (a.starting !== b.starting) return a.starting ? -1 : 1;
@@ -383,7 +413,7 @@ function renderTeam(s: AppState): string {
   const projPoints: Record<string, number> = {};
   for (const r of rows) if (r.proj != null) projPoints[r.id] = r.proj;
   const best = anyProjection ? optimalLineup(projPoints, posOf(s), s.slots) : null;
-  const declared = mine?.starters ?? [];
+  const declared = startingLineup(s, myRosterId());
   const declaredProj = declared.reduce(
     (sum, id) => sum + (id && id !== "0" ? (projected(s, id) ?? 0) : 0),
     0,
@@ -830,7 +860,7 @@ function renderWaivers(s: AppState): string {
    */
   const startersByPos = new Map<string, number[]>();
   for (const roster of s.rosters) {
-    for (const id of roster.starters ?? []) {
+    for (const id of startersFor(s, roster.roster_id)) {
       if (!id || id === "0") continue;
       const pos = s.players[id]?.pos;
       const p = projected(s, id);

@@ -343,6 +343,41 @@ export async function loadAll(opts: LoadOptions = {}): Promise<AppState> {
   };
 }
 
+/**
+ * Refetch only what actually changes minute to minute: this week's scores and
+ * lineups, and the rosters behind them.
+ *
+ * The polling loop used to call loadAll(force), which re-requested league
+ * settings, users, the draft board, every week of transactions and the whole
+ * season's projections — once a minute, for data that changes weekly at most.
+ */
+export async function refreshLive(state: AppState): Promise<AppState> {
+  const week = Math.max(1, state.state.week);
+
+  const [matchupsHit, rostersHit] = await Promise.all([
+    cached(`matchups/${week}`, TTL.matchupsLive, () => getMatchups(LEAGUE_ID, week), {
+      force: true,
+    }),
+    cached("rosters", TTL.rosters, () => getRosters(LEAGUE_ID), { force: true }),
+  ]);
+
+  const rosters = rostersHit.data;
+  return {
+    ...state,
+    rosters,
+    teams: buildTeams(
+      state.users,
+      rosters,
+      state.league.settings.waiver_budget ?? FAAB_BUDGET,
+    ),
+    matchups:
+      matchupsHit.data.length > 0
+        ? { ...state.matchups, [week]: matchupsHit.data }
+        : state.matchups,
+    scoresFetchedAt: matchupsHit.fetchedAt,
+  };
+}
+
 /** How many weeks ahead the on-demand projection load reaches. */
 export const PROJECTION_HORIZON = 4;
 

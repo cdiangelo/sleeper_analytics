@@ -8,11 +8,11 @@ import "./styles.css";
 (globalThis as { __ggBooted?: boolean }).__ggBooted = true;
 
 import { describeAge } from "./lib/cache.js";
-import { playedWeeks } from "./lib/metrics.js";
 import {
   loadAll,
   loadProjectionHorizon,
   myRosterId,
+  refreshLive,
   type AppState,
 } from "./app/store.js";
 import { nearestPoint, type ChartGeometry, type EmphasisSeries } from "./app/charts.js";
@@ -26,6 +26,8 @@ import {
 const TABS: Tab[] = ["now", "team", "performance", "league", "waivers"];
 /** Matches the current-week matchup TTL, so a poll always fetches. */
 const POLL_MS = 60_000;
+/** Between games: slow enough to be free, fast enough that an edit shows up. */
+const IDLE_POLL_MS = 5 * 60_000;
 
 const view = document.getElementById("view")!;
 const subtitle = document.getElementById("subtitle")!;
@@ -104,19 +106,35 @@ async function load(force = false) {
 function schedulePolling() {
   clearInterval(pollTimer);
   if (!state) return;
+  if (state.league.status !== "in_season") return;
 
   const week = Math.max(1, state.state.week);
-  const rows = state.matchups[week] ?? [];
-  const scoring = rows.some((r) => (r.points ?? 0) > 0);
-  const seasonRunning = state.league.status === "in_season";
-  // Before kickoff there is nothing to poll for; once a week is scoring, there is.
-  if (!seasonRunning || (!scoring && playedWeeks(state.matchups).length === 0 && !isGameWindow())) {
-    return;
-  }
+  const scoring = (state.matchups[week] ?? []).some((r) => (r.points ?? 0) > 0);
+
+  // Fast while points are moving. Otherwise still poll, just gently: lineups
+  // and waiver claims change between games too, and a start/sit edit that
+  // takes an hour to appear reads as the app being broken.
+  const interval = scoring || isGameWindow() ? POLL_MS : IDLE_POLL_MS;
 
   pollTimer = window.setInterval(() => {
-    if (document.visibilityState === "visible") void load(true);
-  }, POLL_MS);
+    if (document.visibilityState === "visible") void poll();
+  }, interval);
+}
+
+/**
+ * A poll is not a reload. Only scores, lineups and rosters move on this
+ * cadence; everything else is refetched by the refresh button.
+ */
+async function poll() {
+  if (!state || loading) return;
+  try {
+    state = await refreshLive(state);
+    paint();
+    if (sheetOpen) paintSheet();
+  } catch {
+    // Keep showing the last good render; the age label tells the story.
+    paintFreshness();
+  }
 }
 
 /** Sunday through Monday night, plus Thursday night — when scores move. */
@@ -305,7 +323,7 @@ document.addEventListener("visibilitychange", () => {
   // definition. Refresh rather than showing an old number as if it were live.
   if (document.visibilityState === "visible" && state) {
     const age = describeAge(state.scoresFetchedAt);
-    if (age.ageMs > POLL_MS) void load(true);
+    if (age.ageMs > POLL_MS) void poll();
     else paintFreshness();
   }
 });
