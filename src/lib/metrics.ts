@@ -40,6 +40,44 @@ export function playedWeeks(matchups: Record<number, Matchup[]>): number[] {
     .sort((a, b) => a - b);
 }
 
+/**
+ * Weeks that are actually settled.
+ *
+ * Scores appearing is not the same as a week being over. On a Sunday
+ * afternoon every team has points and none of them are final, so counting
+ * those rows produces a win off a half-played game. The NFL state week is the
+ * signal: Sleeper advances it once the week closes, so anything strictly
+ * before it is done and the current week is still in progress.
+ *
+ * Records, all-play, luck, bench totals and consistency all derive from this
+ * rather than from playedWeeks — a provisional number must never be presented
+ * as a settled one.
+ */
+export function finalWeeks(
+  matchups: Record<number, Matchup[]>,
+  currentWeek: number,
+): number[] {
+  return playedWeeks(matchups).filter((w) => w < currentWeek);
+}
+
+/** The matchup map narrowed to settled weeks, for the season metrics. */
+export function finalMatchups(
+  matchups: Record<number, Matchup[]>,
+  currentWeek: number,
+): Record<number, Matchup[]> {
+  const out: Record<number, Matchup[]> = {};
+  for (const week of finalWeeks(matchups, currentWeek)) out[week] = matchups[week]!;
+  return out;
+}
+
+/** True while the current week has scores on the board but is not yet closed. */
+export function weekInProgress(
+  matchups: Record<number, Matchup[]>,
+  currentWeek: number,
+): boolean {
+  return weekHasScores(matchups[currentWeek]);
+}
+
 // --- scores -----------------------------------------------------------------
 
 export interface WeekScore {

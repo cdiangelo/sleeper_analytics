@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   allPlayStandings,
+  finalMatchups,
+  finalWeeks,
+  weekInProgress,
   benchReport,
   consistency,
   optimalLineup,
@@ -294,5 +297,58 @@ describe("percentile", () => {
 
   it("returns zero for an empty set", () => {
     expect(percentile([], 50)).toBe(0);
+  });
+});
+
+describe("in-progress weeks", () => {
+  /**
+   * Scores appearing is not the same as a week being over. On a Sunday
+   * afternoon every team has points and none of them are final — counting
+   * those rows reported a 1-0 record off a half-played game.
+   */
+  const live: Record<number, Matchup[]> = {
+    1: [
+      row({ roster_id: 1, matchup_id: 1, points: 62.4 }),
+      row({ roster_id: 2, matchup_id: 1, points: 41.8 }),
+    ],
+  };
+
+  it("does not treat the current week as settled", () => {
+    // state.week is still 1, so week 1 is in play.
+    expect(finalWeeks(live, 1)).toEqual([]);
+    expect(finalMatchups(live, 1)).toEqual({});
+  });
+
+  it("settles the week once the NFL state moves past it", () => {
+    expect(finalWeeks(live, 2)).toEqual([1]);
+    expect(Object.keys(finalMatchups(live, 2))).toEqual(["1"]);
+  });
+
+  it("awards no record from a week in play", () => {
+    expect(allPlayStandings(finalMatchups(live, 1))).toEqual([]);
+  });
+
+  it("awards the record once the week closes", () => {
+    const table = allPlayStandings(finalMatchups(live, 2));
+    expect(table.find((r) => r.rosterId === 1)!.actual).toEqual({
+      wins: 1,
+      losses: 0,
+      ties: 0,
+    });
+  });
+
+  it("distinguishes in progress from not started", () => {
+    expect(weekInProgress(live, 1)).toBe(true);
+    // Sleeper returns fully formed rows with zeroed points before kickoff.
+    const preseason = {
+      1: [row({ roster_id: 1, matchup_id: 1, points: 0 }), row({ roster_id: 2, matchup_id: 1, points: 0 })],
+    };
+    expect(weekInProgress(preseason, 1)).toBe(false);
+    expect(finalWeeks(preseason, 1)).toEqual([]);
+  });
+
+  it("keeps earlier weeks while the latest is live", () => {
+    const midSeason = { ...FIXTURE, 3: live[1]! };
+    expect(finalWeeks(midSeason, 3)).toEqual([1, 2]);
   });
 });

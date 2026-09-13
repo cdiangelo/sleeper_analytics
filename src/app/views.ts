@@ -12,8 +12,10 @@ import {
   consistency,
   mean,
   opponentStrength,
+  finalMatchups,
   optimalLineup,
   playedWeeks,
+  weekInProgress,
   positionalEdge,
   trendSeries,
   weekScores,
@@ -109,6 +111,20 @@ function currentWeek(s: AppState): number {
 }
 
 /**
+ * The season as far as it is settled. Every derived metric reads this rather
+ * than s.matchups, so a Sunday in progress cannot turn into a win.
+ */
+function settled(s: AppState): Record<number, Matchup[]> {
+  return finalMatchups(s.matchups, currentWeek(s));
+}
+
+/** Sleeper's own record, which it writes when a week closes. */
+function officialRecord(s: AppState, rosterId: number) {
+  const team = s.teams.find((t) => t.rosterId === rosterId);
+  return { wins: team?.wins ?? 0, losses: team?.losses ?? 0, ties: team?.ties ?? 0 };
+}
+
+/**
  * Who a team is actually starting this week.
  *
  * Two endpoints answer this and they refresh at very different rates:
@@ -156,7 +172,7 @@ export function rosterSeries(s: AppState): PlayerSeries[] {
   const starters = startersFor(s, myRosterId());
 
   return (mine?.players ?? []).map((id) =>
-    playerSeries(id, s.matchups, (week, playerId) => projectedForWeek(s, week, playerId), {
+    playerSeries(id, settled(s), (week, playerId) => projectedForWeek(s, week, playerId), {
       starting: starters.has(id),
     }),
   );
@@ -261,7 +277,7 @@ function renderNow(s: AppState): string {
   const week = currentWeek(s);
   const mine = myRow(s, week);
   const opp = opponentRow(s, week);
-  const played = playedWeeks(s.matchups);
+  const played = playedWeeks(settled(s));
   const live = (mine?.points ?? 0) > 0 || (opp?.points ?? 0) > 0;
 
   const myProj = projectedTotal(s, mine);
@@ -296,17 +312,31 @@ function renderNow(s: AppState): string {
         : ""),
   );
 
-  // Season summary only means something once games have been played.
-  const standings = allPlayStandings(s.matchups);
+  // Season summary only means something once weeks have closed. The record
+  // itself comes from Sleeper, which writes it when a week finalises — derived
+  // W/L from a Sunday still in play would be a guess presented as a result.
+  const standings = allPlayStandings(settled(s));
   const me = standings.find((r) => r.rosterId === myRosterId());
+  const official = officialRecord(s, myRosterId());
+  const inProgress = weekInProgress(s.matchups, week);
+
   const summary = me
     ? `<div class="stats">
-        <div class="stat"><div class="stat-value">${esc(record(me.actual))}</div><div class="stat-label">Record</div></div>
+        <div class="stat"><div class="stat-value">${esc(record(official))}</div><div class="stat-label">Record</div></div>
         <div class="stat"><div class="stat-value">${esc(record(me.allPlay))}</div><div class="stat-label">All-play</div></div>
         <div class="stat"><div class="stat-value ${toneClass(me.luck)}">${esc(signedPct(me.luck))}</div><div class="stat-label">Luck</div></div>
         <div class="stat"><div class="stat-value">${esc(num(me.pointsFor))}</div><div class="stat-label">Points for</div></div>
-      </div>`
-    : `<div class="card">${empty(
+      </div>${
+        inProgress
+          ? `<p class="hint" style="margin:-4px 0 12px">Week ${week} is still in play — these cover weeks 1&ndash;${week - 1}.</p>`
+          : ""
+      }`
+    : inProgress
+      ? `<div class="card">${empty(
+          `Week ${week} in progress`,
+          "Records and trends appear once the week goes final. Live scoring is below.",
+        )}</div>`
+      : `<div class="card">${empty(
         "The season hasn't started",
         kickoffNote(s),
       )}</div>`;
@@ -344,12 +374,12 @@ function renderNow(s: AppState): string {
         "Recent weeks",
         "Your score against the league each week",
         `<table><thead><tr><th>Wk</th><th>You</th><th>Opp</th><th>Avg</th><th></th></tr></thead><tbody>${trendSeries(
-          s.matchups,
+          settled(s),
           myRosterId(),
         )
           .slice(-5)
           .map((row) => {
-            const scores = weekScores(row.week, s.matchups[row.week] ?? []);
+            const scores = weekScores(row.week, settled(s)[row.week] ?? []);
             const meWeek = scores.find((x) => x.rosterId === myRosterId());
             const won = meWeek?.won;
             return `<tr>
@@ -657,7 +687,7 @@ export function renderChartModal(
 // --- Performance ------------------------------------------------------------
 
 function renderPerformance(s: AppState): string {
-  const played = playedWeeks(s.matchups);
+  const played = playedWeeks(settled(s));
   if (played.length === 0) {
     return card(
       "Performance",
@@ -666,8 +696,8 @@ function renderPerformance(s: AppState): string {
     );
   }
 
-  const series = trendSeries(s.matchups, myRosterId());
-  const standings = allPlayStandings(s.matchups);
+  const series = trendSeries(settled(s), myRosterId());
+  const standings = allPlayStandings(settled(s));
   const me = standings.find((r) => r.rosterId === myRosterId());
 
   const trend = card(
@@ -724,7 +754,7 @@ function renderPerformance(s: AppState): string {
       )
     : "";
 
-  const bench = benchReports(s.matchups, myRosterId(), posOf(s), s.slots);
+  const bench = benchReports(settled(s), myRosterId(), posOf(s), s.slots);
   const totalLeft = bench.reduce((sum, b) => sum + b.left, 0);
   const benchCard = bench.length
     ? card(
@@ -747,7 +777,7 @@ function renderPerformance(s: AppState): string {
       )
     : "";
 
-  const edges = positionalEdge(s.matchups, myRosterId(), posOf(s));
+  const edges = positionalEdge(settled(s), myRosterId(), posOf(s));
   const maxEdge = Math.max(...edges.map((e) => Math.max(e.mine, e.leagueAverage)), 1);
   const positional = edges.length
     ? card(
@@ -787,7 +817,7 @@ function renderPerformance(s: AppState): string {
     }</p>`,
   );
 
-  const strength = opponentStrength(s.matchups, myRosterId());
+  const strength = opponentStrength(settled(s), myRosterId());
   const avgRank = mean(strength.map((o) => o.rankLeagueWide).filter((r) => r > 0));
   const scheduleCard = card(
     "Schedule strength",
@@ -815,8 +845,8 @@ function renderPerformance(s: AppState): string {
 // --- League -----------------------------------------------------------------
 
 function renderLeague(s: AppState): string {
-  const played = playedWeeks(s.matchups);
-  const standings = allPlayStandings(s.matchups);
+  const played = playedWeeks(settled(s));
+  const standings = allPlayStandings(settled(s));
 
   const table = played.length
     ? `<div class="scroll-x"><table><thead><tr><th>Team</th><th>Rec</th><th>All-play</th><th>Luck</th><th>PF</th></tr></thead><tbody>${standings
@@ -1045,7 +1075,7 @@ function renderWaivers(s: AppState, ui: UiState): string {
 
   // Roster need, from the performance module — a WR4 upgrade is noise if the
   // TE slot is what's costing games.
-  const edges = positionalEdge(s.matchups, myRosterId(), posOf(s));
+  const edges = positionalEdge(settled(s), myRosterId(), posOf(s));
   const weakest = edges.filter((e) => e.edge < 0).slice(-2).map((e) => e.position);
 
   const mine = s.teams.find((t) => t.rosterId === myRosterId());
@@ -1259,7 +1289,7 @@ export function renderView(tab: Tab, s: AppState, ui: UiState = NO_UI): string {
 }
 
 export function renderSubtitle(s: AppState): string {
-  const played = playedWeeks(s.matchups);
+  const played = playedWeeks(settled(s));
   const week = currentWeek(s);
   const scope =
     played.length === 0
@@ -1270,7 +1300,7 @@ export function renderSubtitle(s: AppState): string {
 
 /** Exposed for the sparkline in the header on wider screens. */
 export function seasonSparkline(s: AppState): string {
-  const series = trendSeries(s.matchups, myRosterId()).map((p) => p.points);
+  const series = trendSeries(settled(s), myRosterId()).map((p) => p.points);
   return series.length > 1 ? sparkline(series) : "";
 }
 
