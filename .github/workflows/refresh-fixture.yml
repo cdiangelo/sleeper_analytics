@@ -12,13 +12,18 @@ on:
     # from re-triggering it.
     paths:
       # Only what actually changes the snapshot's contents or shape. A wider
-      # filter re-commits a 3.4MB fixture on unrelated edits.
+      # filter re-commits a 3.4MB fixture on unrelated edits. The workflow
+      # itself is included so a schedule change re-verifies immediately.
       - "src/lib/sleeper.ts"
       - "src/lib/constants.ts"
       - "scripts/dump.ts"
+      - ".github/workflows/refresh-fixture.yml"
   schedule:
-    # Tuesday 13:00 UTC — after Monday night games and after waivers clear.
-    - cron: "0 13 * * 2"
+    # Daily at 13:00 UTC (09:00 ET) — after overnight, before kickoff.
+    # Weekly was fine in the preseason; in season the roster set, the injury
+    # baseline and the rest-of-season projections all move faster than that,
+    # and a five-day-old snapshot is no basis for a waiver decision.
+    - cron: "0 13 * * *"
 
 permissions:
   contents: write
