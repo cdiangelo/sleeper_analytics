@@ -31,6 +31,7 @@ import {
 import { depthChartContext, describeDepth } from "../lib/depth.js";
 import { describeChange } from "../lib/news.js";
 import { compareToRoster, describeUpgrade } from "../lib/upgrade.js";
+import { tradeFits } from "../lib/trades.js";
 import { leaguePoints, scoringEdge } from "../lib/scoring.js";
 import type { Matchup } from "../lib/types.js";
 import {
@@ -961,7 +962,7 @@ function renderLeague(s: AppState): string {
       )
     : "";
 
-  return standingsCard + prevCard + faab + spendCard;
+  return standingsCard + tradeCard(s) + prevCard + faab + spendCard;
 }
 
 /**
@@ -1021,6 +1022,82 @@ function upgradeRow(s: AppState, targetId: string, position: string): string {
       ${body}
     </div>
   </td></tr>`;
+}
+
+/**
+ * Who is worth approaching about a trade.
+ *
+ * Two signals only. A handcuff on the wrong roster is worth more to the
+ * manager holding the starter than to anyone else, and a positional fit only
+ * counts when it runs both ways — a team thin where you are deep but holding
+ * nothing you want is a favour, not a trade.
+ */
+function tradeCard(s: AppState): string {
+  // Kickers and defences are streamed off the wire every week, so being thin
+  // at one is not a need anybody trades to fix. Including them buried the real
+  // signal under "they are thin at K".
+  const STREAMED = new Set(["FLEX", "K", "DEF"]);
+  const slotCounts: Record<string, number> = {};
+  for (const slot of s.slots) {
+    if (STREAMED.has(slot)) continue;
+    slotCounts[slot] = (slotCounts[slot] ?? 0) + 1;
+  }
+
+  const week = currentWeek(s);
+  const value = (id: string) => {
+    const weeks: number[] = [];
+    for (let w = week; w <= 17; w++) {
+      const p = projectedForWeek(s, w, id);
+      if (p != null) weeks.push(p);
+    }
+    return weeks.length ? weeks.reduce((a, b) => a + b, 0) / weeks.length : null;
+  };
+
+  const fits = tradeFits(
+    myRosterId(),
+    s.rosters.map((r) => ({ rosterId: r.roster_id, players: r.players ?? [] })),
+    s.players,
+    value,
+    slotCounts,
+  );
+
+  if (fits.length === 0) return "";
+
+  const rows = fits
+    .map((fit) => {
+      const lines: string[] = [];
+
+      for (const link of fit.handcuffs) {
+        const mineIsBackup = link.backupRosterId === myRosterId();
+        const backup = playerName(s, link.backupId);
+        const starter = playerName(s, link.starterId);
+        lines.push(
+          mineIsBackup
+            ? `You hold <b>${esc(backup)}</b>, the ${esc(link.team)} back behind their <b>${esc(starter)}</b>. Insurance to them, a bench spot to you.`
+            : `They hold <b>${esc(backup)}</b> behind your <b>${esc(starter)}</b> — your insurance, sitting on their bench.`,
+        );
+      }
+
+      if (fit.theyNeed.length && fit.youNeed.length) {
+        lines.push(
+          `They are thin at ${esc(fit.theyNeed.join(", "))} where you are deep; you are thin at ${esc(
+            fit.youNeed.join(", "),
+          )} where they are not.`,
+        );
+      }
+
+      return `<tr><td>
+        <b>${esc(teamName(s, fit.rosterId))}</b>
+        ${lines.map((l) => `<span class="sub" style="margin-top:3px">${l}</span>`).join("")}
+      </td></tr>`;
+    })
+    .join("");
+
+  return card(
+    "Trade fits",
+    "Where a swap would suit both sides",
+    `<table><tbody>${rows}</tbody></table>`,
+  );
 }
 
 // --- Waivers ----------------------------------------------------------------
